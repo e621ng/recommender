@@ -1,0 +1,15 @@
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+dist/
+build/
+*.egg-info/
+docs/
+models/
+.python-version
+docker-compose.yml
