@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_minor:
+        description: "Bump minor version?"
+        required: true
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Verify module imports
+        run: python -c "import recommender; print(f'✓ recommender {recommender.__version__}')"
+
+      - name: Configure git
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Determine version bump type
+        id: bump_type
+        run: |
+          if [ "${{ github.event.inputs.bump_minor }}" = "true" ]; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          else
+            echo "type=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        run: python scripts/bump-version.py ${{ steps.bump_type.outputs.type }}
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python scripts/bump-version.py --current)
+          MAJOR_MINOR=$(echo $VERSION | cut -d. -f1-2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "major_minor=$MAJOR_MINOR" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.major_minor }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push version commit and tag
+        run: |
+          git push origin main
+          git push origin --tags
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

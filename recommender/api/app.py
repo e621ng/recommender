@@ -5,6 +5,7 @@ import structlog
 
 from fastapi import FastAPI
 
+from recommender import __version__
 from recommender.api import metrics as m
 from recommender.api.engine import SimilarityEngine
 from recommender.api.routes import router
@@ -38,7 +39,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="e621ng Recommender",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.include_router(router)
