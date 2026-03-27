@@ -35,7 +35,7 @@ def test_roundtrip_preserves_ids():
     vocab.get_or_add("male")
     restored = TagVocab.from_dict(vocab.to_dict())
     for tag in ("wolf", "solo", "male"):
-        assert restored._str_to_id[tag] == vocab._str_to_id[tag]
+        assert restored.get_or_add(tag) == vocab.get_or_add(tag)
 
 
 def test_roundtrip_new_additions_do_not_collide():

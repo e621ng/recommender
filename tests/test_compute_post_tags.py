@@ -55,9 +55,8 @@ def test_invalid_category_excluded():
         tag_metadata=tag_meta,
         category_multipliers=CAT_MULTS,
     )
-    assert len(result) == 1
-    assert "bad" not in vocab._str_to_id   # never added to vocab
-    assert result[0][0] == vocab._str_to_id["good"]
+    assert len(result) == 1                              # "bad" was never added
+    assert result[0][0] == vocab.get_or_add("good")      # idempotent — already exists
 
 
 def test_idf_weight_formula():

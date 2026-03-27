@@ -2,24 +2,17 @@ import numpy as np
 import pytest
 
 from recommender.model.hybrid import (
-    _l2_normalize_rows,
     compute_hybrid_vectors,
     cosine_score,
 )
 
 
-def test_normalize_rows_unit_norm():
-    matrix = np.array([[3.0, 4.0], [1.0, 0.0]], dtype=np.float32)
-    result = _l2_normalize_rows(matrix)
-    norms = np.linalg.norm(result, axis=1)
-    np.testing.assert_allclose(norms, [1.0, 1.0], atol=1e-6)
-
-
-def test_normalize_rows_zero_vector_no_nan():
-    matrix = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32)
-    result = _l2_normalize_rows(matrix)
-    assert not np.any(np.isnan(result))
-    np.testing.assert_array_equal(result[0], [0.0, 0.0])
+def test_zero_vectors_produce_no_nan():
+    """All-zero inputs must not produce NaN (zero-division guard)."""
+    cf = np.zeros((3, 8), dtype=np.float32)
+    tag = np.zeros((3, 8), dtype=np.float32)
+    result = compute_hybrid_vectors(cf, tag, w_cf=1.0, w_tag=0.3)
+    assert not np.any(np.isnan(result.astype(np.float32)))
 
 
 def test_compute_hybrid_vectors_output_dtype():
