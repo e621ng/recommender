@@ -16,9 +16,10 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000)
     api_workers: int = Field(default=1)
 
-    # Hybrid blend weights
-    w_cf: float = Field(default=1.0)
-    w_tag: float = Field(default=0.3)
+    # Hybrid blend weights per recommendation mode (w_cf, w_tag)
+    weight_presets: dict[str, tuple[float, float]] = Field(
+        default={"favorites": (1.0, 0.3), "tags": (0.3, 1.0)}
+    )
 
     # Embedding dimensions
     embedding_dim: int = Field(default=64)

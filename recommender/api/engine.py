@@ -21,15 +21,19 @@ class SimilarityEngine:
         limit: int,
         explain: bool,
         include_scores: bool,
+        mode: str = "favorites",
     ) -> SimilarResponse:
         b = self._b
+        if mode not in b.indexes:
+            raise ValueError(f"unknown mode {mode!r}")
         idx = b.post_index.get(post_id)
         if idx is None:
             return SimilarResponse(post_id=post_id, model_version=b.version, results=[])
 
-        q_vec = b.post_vectors[idx].astype(np.float32)
+        ann = b.indexes[mode]
+        q_vec = b.post_vectors[mode][idx].astype(np.float32)
         # Request limit+1 to exclude the query post itself
-        labels, distances = query_index(b.ann, q_vec, limit=min(limit + 1, b.ann.get_current_count()))
+        labels, distances = query_index(ann, q_vec, limit=min(limit + 1, ann.get_current_count()))
 
         results: list[SimilarResult] = []
         for label, dist in zip(labels.tolist(), distances.tolist()):

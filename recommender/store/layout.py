@@ -29,12 +29,12 @@ def post_ids(vdir: Path) -> Path:
     return vdir / "post_ids.npy"
 
 
-def post_vectors(vdir: Path) -> Path:
-    return vdir / "post_vectors.f16.npy"
+def post_vectors(vdir: Path, mode: str = "favorites") -> Path:
+    return vdir / f"post_vectors.{mode}.f16.npy"
 
 
-def ann_index(vdir: Path) -> Path:
-    return vdir / "ann.index"
+def ann_index(vdir: Path, mode: str = "favorites") -> Path:
+    return vdir / f"ann.{mode}.index"
 
 
 def tag_vocab(vdir: Path) -> Path:
