@@ -19,6 +19,8 @@ class ArtifactWriter:
         self._pending_version: str | None = None
         self._pending_n: int | None = None
         self._pending_embedding_dim: int | None = None
+        self._pending_modes: set[str] = set()
+        self._written_modes: set[str] = set()
 
     def __enter__(self) -> "ArtifactWriter":
         return self
@@ -30,6 +32,8 @@ class ArtifactWriter:
             self._pending_version = None
             self._pending_n = None
             self._pending_embedding_dim = None
+            self._pending_modes = set()
+            self._written_modes = set()
         return False
 
     def begin_version(
@@ -52,10 +56,20 @@ class ArtifactWriter:
         versions_root = Path(self._model_dir) / "versions"
         versions_root.mkdir(parents=True, exist_ok=True)
 
+        if post_id_array.ndim != 1:
+            raise ValueError(f"post_id_array must be 1-D, got shape {post_id_array.shape}")
+        n = len(post_id_array)
+        if len(post_fav_count_array) != n:
+            raise ValueError(
+                f"post_fav_count_array length {len(post_fav_count_array)} != post_id_array length {n}"
+            )
+        if len(post_top_tags_list) != n:
+            raise ValueError(
+                f"post_top_tags_list length {len(post_top_tags_list)} != post_id_array length {n}"
+            )
+
         tmp_dir = Path(tempfile.mkdtemp(dir=versions_root, prefix="_tmp_"))
         try:
-            n = len(post_id_array)
-
             # manifest
             manifest = {
                 "version": version,
@@ -88,6 +102,8 @@ class ArtifactWriter:
             self._pending_version = version
             self._pending_n = n
             self._pending_embedding_dim = embedding_dim
+            self._pending_modes = set(modes)
+            self._written_modes = set()
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
@@ -105,12 +121,24 @@ class ArtifactWriter:
             raise ValueError(
                 f"mode {mode_name!r}: hybrid dim {hybrid.shape[1]} != manifest embedding_dim {self._pending_embedding_dim}"
             )
-        np.save(str(layout.post_vectors(self._pending_tmp_dir, mode_name)), hybrid.astype(np.float16))
+        if mode_name not in self._pending_modes:
+            raise ValueError(
+                f"write_mode() called with undeclared mode {mode_name!r}; "
+                f"declared modes: {sorted(self._pending_modes)}"
+            )
+        np.save(str(layout.post_vectors(self._pending_tmp_dir, mode_name)), hybrid.astype(np.float16, copy=False))
         ann.save_index(str(layout.ann_index(self._pending_tmp_dir, mode_name)))
+        self._written_modes.add(mode_name)
 
     def finalize_version(self, keep_versions: int = 3) -> Path:
         if self._pending_tmp_dir is None:
             raise RuntimeError("begin_version() must be called before finalize_version()")
+
+        missing = self._pending_modes - self._written_modes
+        if missing:
+            raise RuntimeError(
+                f"finalize_version() called before write_mode() for: {sorted(missing)}"
+            )
 
         tmp_dir = self._pending_tmp_dir
         version = self._pending_version
@@ -124,12 +152,16 @@ class ArtifactWriter:
             self._pending_version = None
             self._pending_n = None
             self._pending_embedding_dim = None
+            self._pending_modes = set()
+            self._written_modes = set()
             raise
 
         self._pending_tmp_dir = None
         self._pending_version = None
         self._pending_n = None
         self._pending_embedding_dim = None
+        self._pending_modes = set()
+        self._written_modes = set()
 
         versions_root = Path(self._model_dir) / "versions"
         self._update_current_link(version)

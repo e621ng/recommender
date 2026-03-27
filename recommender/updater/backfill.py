@@ -117,7 +117,7 @@ def run_backfill(cfg: Settings) -> None:
             for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
                 hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
                 ann = build_index(
-                    hybrid.astype(np.float32), post_id_arr,
+                    hybrid, post_id_arr,
                     m=cfg.hnsw_m, ef_construction=cfg.hnsw_ef_construction, ef_search=cfg.hnsw_ef_search,
                 )
                 writer.write_mode(mode_name, hybrid, ann)
