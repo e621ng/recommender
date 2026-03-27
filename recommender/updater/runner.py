@@ -57,7 +57,7 @@ def run_update(cfg: Settings) -> None:
         log.info("updater.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
 
         # --- 3. Refresh changed posts/tags ---
-        n_posts = _refresh_posts(conn, state, vocab, post_top_tags, tag_emb, tag_metadata, n_posts_total, cfg)
+        n_posts, tag_emb = _refresh_posts(conn, state, vocab, post_top_tags, tag_emb, tag_metadata, n_posts_total, cfg)
         log.info("updater.posts_done", n_posts=n_posts)
 
         # --- 4. Compute hybrid vectors ---
@@ -241,6 +241,7 @@ def _refresh_posts(
     after_dt = state.last_posts_updated_at_dt()
     n_total = 0
     max_seen = after_dt
+    cat_multipliers = cfg.category_multipliers
 
     for batch in dbmod.fetch_changed_posts_batches(conn, after_dt, cfg.posts_batch_size):
         for post in batch:
@@ -249,7 +250,7 @@ def _refresh_posts(
                 n_top=cfg.n_top_tags,
                 n_posts=n_posts_total,
                 tag_metadata=tag_metadata,
-                category_multipliers=cfg.category_multipliers,
+                category_multipliers=cat_multipliers,
             )
             post_top_tags[post.id] = top_tags
             if post.updated_at > max_seen:
@@ -276,7 +277,7 @@ def _refresh_posts(
     if max_seen > after_dt:
         state.last_posts_updated_at = max_seen.isoformat()
 
-    return n_total
+    return n_total, tag_emb
 
 
 def _build_tag_matrix(

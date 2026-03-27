@@ -74,7 +74,7 @@ Returns posts similar to the given post.
 |---|---|---|---|
 | `post_id` | int | required | Source post ID |
 | `limit` | int | `6` | Number of results (max 20) |
-| `explain` | bool | `false` | Include shared tags and score breakdown |
+| `explain` | bool | `false` | Include shared tags and favorite counts |
 | `include_scores` | bool | `true` | Include similarity scores in results |
 
 **Example:**

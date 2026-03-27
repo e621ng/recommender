@@ -130,9 +130,9 @@ def fetch_all_favorites(
 
 
 def fetch_tag_metadata(conn: psycopg.Connection) -> dict[str, tuple[int, int]]:
-    """Return {tag_name: (category, post_count)} for all non-invalid tags."""
+    """Return {tag_name: (category, post_count)} for all tags."""
     rows = conn.execute(
-        "SELECT name, category, post_count FROM public.tags WHERE category != 6"
+        "SELECT name, category, post_count FROM public.tags"
     ).fetchall()
     return {name: (category, post_count) for name, category, post_count in rows}
 

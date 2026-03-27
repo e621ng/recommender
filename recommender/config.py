@@ -26,9 +26,6 @@ class Settings(BaseSettings):
     # Per-post top-tag limit
     n_top_tags: int = Field(default=100)
 
-    # Fallback total post count used in IDF when DB is unavailable
-    n_posts_fallback: int = Field(default=6_280_000)
-
     # Category weight multipliers (category values per e621ng schema)
     tag_weight_general: float = Field(default=1.0)    # category 0
     tag_weight_artist: float = Field(default=3.0)     # category 1
