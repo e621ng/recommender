@@ -81,11 +81,21 @@ def run_backfill(cfg: Settings) -> None:
         log.info("backfill.favorites_done", n=n_events)
 
         # --- Compute hybrid vectors ---
-        post_id_arr, cf_matrix = post_table.to_arrays()
+        # Union of CF-trained posts and tag-known posts; zero CF vector for posts
+        # that appear in post_top_tags but have not accumulated any favorites.
+        all_post_ids = sorted(set(post_table.ids()) | set(post_top_tags.keys()))
+        post_id_arr = np.array(all_post_ids, dtype=np.int64)
+        cf_ids, cf_vecs = post_table.to_arrays()
+        cf_lookup: dict[int, int] = {int(pid): i for i, pid in enumerate(cf_ids)}
+        cf_matrix = np.zeros((len(all_post_ids), dim), dtype=np.float32)
+        if cf_lookup:
+            dest = [i for i, pid in enumerate(all_post_ids) if pid in cf_lookup]
+            src  = [cf_lookup[pid] for pid in all_post_ids if pid in cf_lookup]
+            cf_matrix[dest] = cf_vecs[src]
         n = len(post_id_arr)
         tag_matrix = np.zeros((n, dim), dtype=np.float32)
-        for i, pid in enumerate(post_id_arr.tolist()):
-            top_tags = post_top_tags.get(int(pid), [])
+        for i, pid in enumerate(all_post_ids):
+            top_tags = post_top_tags.get(pid, [])
             tag_matrix[i] = compute_tag_vector(top_tags, tag_emb, dim)
 
         # --- Begin writing versioned artifacts ---

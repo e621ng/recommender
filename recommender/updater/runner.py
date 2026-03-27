@@ -75,11 +75,11 @@ def run_update(cfg: Settings) -> None:
                 f"or restore a matching config before running the updater."
             )
         cf_lookup: dict[int, int] = {int(pid): i for i, pid in enumerate(cf_ids)}
-        _zero_cf = np.zeros(cfg.embedding_dim, dtype=np.float32)
-        cf_matrix = np.stack([
-            cf_vecs[cf_lookup[pid]] if pid in cf_lookup else _zero_cf
-            for pid in all_post_ids
-        ])
+        cf_matrix = np.zeros((len(all_post_ids), cfg.embedding_dim), dtype=np.float32)
+        if cf_lookup:
+            dest = [i for i, pid in enumerate(all_post_ids) if pid in cf_lookup]
+            src  = [cf_lookup[pid] for pid in all_post_ids if pid in cf_lookup]
+            cf_matrix[dest] = cf_vecs[src]
         tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
 
         # --- 5. Build aligned arrays and begin writing versioned artifacts ---
