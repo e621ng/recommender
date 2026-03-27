@@ -68,7 +68,13 @@ def run_update(cfg: Settings) -> None:
 
         post_id_arr = np.array(all_post_ids, dtype=np.int64)
         cf_ids, cf_vecs = post_table.to_arrays()
-        cf_lookup: dict[int, int] = {int(pid): i for i, pid in enumerate(cf_ids.tolist())}
+        if len(cf_vecs) > 0 and cf_vecs.shape[1] != cfg.embedding_dim:
+            raise RuntimeError(
+                f"Saved CF embeddings have dim={cf_vecs.shape[1]} but "
+                f"cfg.embedding_dim={cfg.embedding_dim}. Wipe the training state "
+                f"or restore a matching config before running the updater."
+            )
+        cf_lookup: dict[int, int] = {int(pid): i for i, pid in enumerate(cf_ids)}
         _zero_cf = np.zeros(cfg.embedding_dim, dtype=np.float32)
         cf_matrix = np.stack([
             cf_vecs[cf_lookup[pid]] if pid in cf_lookup else _zero_cf
