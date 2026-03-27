@@ -18,6 +18,19 @@ class ArtifactWriter:
         self._pending_tmp_dir: Path | None = None
         self._pending_version: str | None = None
         self._pending_n: int | None = None
+        self._pending_embedding_dim: int | None = None
+
+    def __enter__(self) -> "ArtifactWriter":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if self._pending_tmp_dir is not None:
+            shutil.rmtree(self._pending_tmp_dir, ignore_errors=True)
+            self._pending_tmp_dir = None
+            self._pending_version = None
+            self._pending_n = None
+            self._pending_embedding_dim = None
+        return False
 
     def begin_version(
         self,
@@ -74,6 +87,7 @@ class ArtifactWriter:
             self._pending_tmp_dir = tmp_dir
             self._pending_version = version
             self._pending_n = n
+            self._pending_embedding_dim = embedding_dim
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
@@ -87,6 +101,10 @@ class ArtifactWriter:
             raise ValueError(
                 f"mode {mode_name!r}: hybrid length {hybrid.shape[0]} != post count {self._pending_n}"
             )
+        if hybrid.shape[1] != self._pending_embedding_dim:
+            raise ValueError(
+                f"mode {mode_name!r}: hybrid dim {hybrid.shape[1]} != manifest embedding_dim {self._pending_embedding_dim}"
+            )
         np.save(str(layout.post_vectors(self._pending_tmp_dir, mode_name)), hybrid.astype(np.float16))
         ann.save_index(str(layout.ann_index(self._pending_tmp_dir, mode_name)))
 
@@ -96,12 +114,22 @@ class ArtifactWriter:
 
         tmp_dir = self._pending_tmp_dir
         version = self._pending_version
+
+        final_dir = layout.version_dir(self._model_dir, version)
+        try:
+            os.rename(tmp_dir, final_dir)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            self._pending_tmp_dir = None
+            self._pending_version = None
+            self._pending_n = None
+            self._pending_embedding_dim = None
+            raise
+
         self._pending_tmp_dir = None
         self._pending_version = None
         self._pending_n = None
-
-        final_dir = layout.version_dir(self._model_dir, version)
-        os.rename(tmp_dir, final_dir)
+        self._pending_embedding_dim = None
 
         versions_root = Path(self._model_dir) / "versions"
         self._update_current_link(version)

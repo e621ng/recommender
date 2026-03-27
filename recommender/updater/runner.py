@@ -71,35 +71,35 @@ def run_update(cfg: Settings) -> None:
         top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
 
         version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        writer = ArtifactWriter(cfg.model_dir)
-        writer.begin_version(
-            version=version,
-            modes=list(cfg.weight_presets),
-            embedding_dim=cfg.embedding_dim,
-            state_data=state.to_dict(),
-            post_id_array=post_id_arr,
-            tag_vocab_data=vocab.to_dict(),
-            post_top_tags_list=top_tags_list,
-            post_fav_count_array=fav_arr,
-        )
-
-        # --- 6. Build and write one ANN index per mode, freeing each before the next ---
-        log.info("updater.building_indexes", n_posts=len(post_id_arr), modes=list(cfg.weight_presets))
-        t_idx = time.time()
-        for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
-            hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
-            ann = build_index(
-                hybrid.astype(np.float32),
-                post_id_arr,
-                m=cfg.hnsw_m,
-                ef_construction=cfg.hnsw_ef_construction,
-                ef_search=cfg.hnsw_ef_search,
+        with ArtifactWriter(cfg.model_dir) as writer:
+            writer.begin_version(
+                version=version,
+                modes=list(cfg.weight_presets),
+                embedding_dim=cfg.embedding_dim,
+                state_data=state.to_dict(),
+                post_id_array=post_id_arr,
+                tag_vocab_data=vocab.to_dict(),
+                post_top_tags_list=top_tags_list,
+                post_fav_count_array=fav_arr,
             )
-            writer.write_mode(mode_name, hybrid, ann)
-            del hybrid, ann
-        metrics.index_rebuild_seconds.observe(time.time() - t_idx)
 
-        writer.finalize_version(keep_versions=cfg.keep_versions)
+            # --- 6. Build and write one ANN index per mode, freeing each before the next ---
+            log.info("updater.building_indexes", n_posts=len(post_id_arr), modes=list(cfg.weight_presets))
+            t_idx = time.time()
+            for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
+                hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
+                ann = build_index(
+                    hybrid.astype(np.float32),
+                    post_id_arr,
+                    m=cfg.hnsw_m,
+                    ef_construction=cfg.hnsw_ef_construction,
+                    ef_search=cfg.hnsw_ef_search,
+                )
+                writer.write_mode(mode_name, hybrid, ann)
+                del hybrid, ann
+            metrics.index_rebuild_seconds.observe(time.time() - t_idx)
+
+            writer.finalize_version(keep_versions=cfg.keep_versions)
         log.info("updater.version_promoted", version=version)
 
         # --- 8. Save training artifacts ---
