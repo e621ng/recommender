@@ -27,6 +27,24 @@ The updater consumes new favorite events incrementally using a watermark on `fav
 - A running e621ng PostgreSQL database with migrations applied
 
 
+## System requirements
+
+Estimates are based on a full-scale e621ng dataset (~6.3M posts, ~1.25B favorite edges).
+
+|  | Minimum | Recommended |
+|---|---|---|
+| CPU | 4 cores | 8 cores |
+| RAM | 16 GB | 24–32 GB |
+| Disk (model volume) | 50 GB | 100 GB |
+
+**RAM breakdown:**
+- The API holds the HNSW index (~4 GB) and post vectors (~0.8 GB) in memory at all times. If `explain=true` queries are common, budget an additional ~2–5 GB for the per-post tag features.
+- The updater peaks at ~10–13 GB while rebuilding the index during a daily run.
+- At 16 GB, the API and updater cannot run comfortably at the same time. Stop the API before running the updater, then restart it once the new model is promoted.
+
+**Disk:** each model version is ~7–10 GB; `keep_versions=3` (the default) retains three versions for rollback.
+
+
 ## Quick start
 
 ```sh
@@ -56,7 +74,7 @@ Returns posts similar to the given post.
 |---|---|---|---|
 | `post_id` | int | required | Source post ID |
 | `limit` | int | `6` | Number of results (max 20) |
-| `explain` | bool | `false` | Include shared tags and score breakdown |
+| `explain` | bool | `false` | Include shared tags and favorite counts |
 | `include_scores` | bool | `true` | Include similarity scores in results |
 
 **Example:**
@@ -77,7 +95,6 @@ GET /similar?post_id=123&limit=10&explain=true
       "score": 0.8123,
       "explanation": {
         "shared_tags": ["wolf", "solo", "male"],
-        "score_breakdown": { "cf": 0.71, "tag": 0.0 },
         "fav_counts": { "query": 12034, "candidate": 9833 }
       }
     }

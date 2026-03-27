@@ -35,13 +35,25 @@ def run_backfill(cfg: Settings) -> None:
 
     conn = dbmod.connect_with_retry(cfg.db_dsn)
     try:
+        # --- Fetch tag metadata for weight computation ---
+        tag_metadata = dbmod.fetch_tag_metadata(conn)
+        n_posts_total = dbmod.fetch_post_count(conn)
+        log.info("backfill.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
+
         # --- Scan all posts first (build vocab) ---
         log.info("backfill.posts_start")
         n_posts = 0
         max_updated_at = datetime(1970, 1, 1)
+        cat_multipliers = cfg.category_multipliers
         for batch in dbmod.fetch_all_posts(conn, cfg.posts_batch_size):
             for post in batch:
-                top_tags = compute_post_top_tags(post.tag_string, vocab, cfg.n_top_tags)
+                top_tags = compute_post_top_tags(
+                    post.tag_string, vocab,
+                    n_top=cfg.n_top_tags,
+                    n_posts=n_posts_total,
+                    tag_metadata=tag_metadata,
+                    category_multipliers=cat_multipliers,
+                )
                 post_top_tags[post.id] = top_tags
                 if post.updated_at and post.updated_at > max_updated_at:
                     max_updated_at = post.updated_at
