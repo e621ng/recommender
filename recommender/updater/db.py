@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Generator
 
 import psycopg
+
+from recommender.model.tags import TagMeta
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
@@ -129,12 +131,12 @@ def fetch_all_favorites(
             break
 
 
-def fetch_tag_metadata(conn: psycopg.Connection) -> dict[str, tuple[int, int]]:
-    """Return {tag_name: (category, post_count)} for all tags."""
+def fetch_tag_metadata(conn: psycopg.Connection) -> dict[str, TagMeta]:
+    """Return {tag_name: TagMeta} for all tags."""
     rows = conn.execute(
         "SELECT name, category, post_count FROM public.tags"
     ).fetchall()
-    return {name: (category, post_count) for name, category, post_count in rows}
+    return {name: TagMeta(category=category, post_count=post_count) for name, category, post_count in rows}
 
 
 def fetch_post_count(conn: psycopg.Connection) -> int:

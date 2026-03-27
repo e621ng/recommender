@@ -12,7 +12,7 @@ from recommender.config import Settings
 from recommender.model.ann import build_index
 from recommender.model.embeddings import EmbeddingTable, apply_event_batch
 from recommender.model.hybrid import compute_hybrid_vectors
-from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags, compute_tag_vector
+from recommender.model.tags import TagVocab, compute_post_top_tags, compute_tag_vector
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.writer import ArtifactWriter
 from recommender.updater import db as dbmod
@@ -36,10 +36,7 @@ def run_backfill(cfg: Settings) -> None:
     conn = dbmod.connect_with_retry(cfg.db_dsn)
     try:
         # --- Fetch tag metadata for weight computation ---
-        tag_metadata = {
-            name: TagMeta(category=cat, post_count=cnt)
-            for name, (cat, cnt) in dbmod.fetch_tag_metadata(conn).items()
-        }
+        tag_metadata = dbmod.fetch_tag_metadata(conn)
         n_posts_total = dbmod.fetch_post_count(conn)
         log.info("backfill.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
 

@@ -49,10 +49,7 @@ def run_update(cfg: Settings) -> None:
         log.info("updater.events_done", n_events=n_events, watermark=state.last_event_id)
 
         # --- 2. Fetch tag metadata for weight computation ---
-        tag_metadata = {
-            name: TagMeta(category=cat, post_count=cnt)
-            for name, (cat, cnt) in dbmod.fetch_tag_metadata(conn).items()
-        }
+        tag_metadata = dbmod.fetch_tag_metadata(conn)
         n_posts_total = dbmod.fetch_post_count(conn)
         log.info("updater.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
 
@@ -234,7 +231,7 @@ def _refresh_posts(
     tag_metadata: dict[str, TagMeta],
     n_posts_total: int,
     cfg: Settings,
-) -> int:
+) -> tuple[int, np.ndarray]:
     import orjson
 
     tdir = Path(training_dir(cfg.model_dir))
