@@ -58,12 +58,22 @@ def run_update(cfg: Settings) -> None:
         log.info("updater.posts_done", n_posts=n_posts)
 
         # --- 4. Compute hybrid vectors ---
-        post_ids_list = post_table.ids()
-        if not post_ids_list:
+        # Build post universe from the union of CF-trained posts and tag-known posts.
+        # Posts present in post_top_tags but absent from post_table have no collaborative
+        # signal yet; they receive a zero CF vector so they are still reachable via tags.
+        all_post_ids = sorted(set(post_table.ids()) | set(post_top_tags.keys()))
+        if not all_post_ids:
             log.warning("updater.no_posts")
             return
 
-        post_id_arr, cf_matrix = post_table.to_arrays()
+        post_id_arr = np.array(all_post_ids, dtype=np.int64)
+        cf_ids, cf_vecs = post_table.to_arrays()
+        cf_lookup: dict[int, int] = {int(pid): i for i, pid in enumerate(cf_ids.tolist())}
+        _zero_cf = np.zeros(cfg.embedding_dim, dtype=np.float32)
+        cf_matrix = np.stack([
+            cf_vecs[cf_lookup[pid]] if pid in cf_lookup else _zero_cf
+            for pid in all_post_ids
+        ])
         tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
 
         # --- 5. Build aligned arrays and begin writing versioned artifacts ---
