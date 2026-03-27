@@ -69,7 +69,7 @@ class SimilarityEngine:
         a_tags = b.get_top_tags(query_idx)
         c_tags = b.get_top_tags(cand_idx)
 
-        shared = _intersect_top(a_tags, c_tags, self._m)
+        shared = intersect_top(a_tags, c_tags, self._m)
         shared_names = [b.tag_name(tid) for tid, _ in shared]
 
         fav_counts = FavCounts(
@@ -83,12 +83,18 @@ class SimilarityEngine:
         )
 
 
-def _intersect_top(
+def intersect_top(
     a: list[tuple[int, float]],
     b: list[tuple[int, float]],
     m: int,
 ) -> list[tuple[int, float]]:
-    """O(N) merge of two tag_id-sorted lists; return top-m by min(wA, wB)."""
+    """Intersect two tag_id-sorted lists and return the top-m shared tags by min(wA, wB).
+
+    Complexity: O(N) for the merge pass, O(k log k) to sort the shared tags by
+    contribution before capping at m, where k = len(shared) <= min(len(a), len(b)).
+    In practice k is bounded by cfg.n_top_tags (RECOMMENDER_N_TOP_TAGS), so the sort
+    is negligible.
+    """
     shared: list[tuple[int, float]] = []
     ia, ib = 0, 0
     while ia < len(a) and ib < len(b):

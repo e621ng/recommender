@@ -38,5 +38,10 @@ packages = ["recommender"]
 [tool.hatch.version]
 path = "recommender/__init__.py"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
