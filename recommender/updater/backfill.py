@@ -88,21 +88,10 @@ def run_backfill(cfg: Settings) -> None:
             top_tags = post_top_tags.get(int(pid), [])
             tag_matrix[i] = compute_tag_vector(top_tags, tag_emb, dim)
 
-        # --- Build ANN index per mode ---
-        log.info("backfill.building_indexes", n=n, modes=list(cfg.weight_presets))
-        preset_artifacts: dict = {}
-        for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
-            hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
-            ann = build_index(
-                hybrid.astype(np.float32), post_id_arr,
-                m=cfg.hnsw_m, ef_construction=cfg.hnsw_ef_construction, ef_search=cfg.hnsw_ef_search,
-            )
-            preset_artifacts[mode_name] = (hybrid, ann)
-
+        # --- Begin writing versioned artifacts ---
         fav_arr = np.array([fav_count.get(int(p), 0) for p in post_id_arr], dtype=np.uint32)
         top_tags_list = [post_top_tags.get(int(p), []) for p in post_id_arr]
 
-        # --- Write version ---
         max_event_id = dbmod.fetch_max_event_id(conn)
         version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         state = UpdaterState(
@@ -111,17 +100,30 @@ def run_backfill(cfg: Settings) -> None:
             model_version=version,
         )
 
-        writer = ArtifactWriter(cfg.model_dir)
-        writer.write_version(
-            version=version,
-            state_data=state.to_dict(),
-            post_id_array=post_id_arr,
-            preset_artifacts=preset_artifacts,
-            tag_vocab_data=vocab.to_dict(),
-            post_top_tags_list=top_tags_list,
-            post_fav_count_array=fav_arr,
-            keep_versions=cfg.keep_versions,
-        )
+        with ArtifactWriter(cfg.model_dir) as writer:
+            writer.begin_version(
+                version=version,
+                modes=list(cfg.weight_presets),
+                embedding_dim=cfg.embedding_dim,
+                state_data=state.to_dict(),
+                post_id_array=post_id_arr,
+                tag_vocab_data=vocab.to_dict(),
+                post_top_tags_list=top_tags_list,
+                post_fav_count_array=fav_arr,
+            )
+
+            # --- Build and write one ANN index per mode, freeing each before the next ---
+            log.info("backfill.building_indexes", n=n, modes=list(cfg.weight_presets))
+            for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
+                hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
+                ann = build_index(
+                    hybrid, post_id_arr,
+                    m=cfg.hnsw_m, ef_construction=cfg.hnsw_ef_construction, ef_search=cfg.hnsw_ef_search,
+                )
+                writer.write_mode(mode_name, hybrid, ann)
+                del hybrid, ann
+
+            writer.finalize_version(keep_versions=cfg.keep_versions)
         log.info("backfill.version_promoted", version=version)
 
         # --- Save training artifacts ---

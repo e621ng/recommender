@@ -1,5 +1,4 @@
 """Atomic versioned artifact writer."""
-import json
 import os
 import shutil
 import tempfile
@@ -16,100 +15,158 @@ from recommender.store import layout, top_tags as tt
 class ArtifactWriter:
     def __init__(self, model_dir: str):
         self._model_dir = model_dir
+        self._pending_tmp_dir: Path | None = None
+        self._pending_version: str | None = None
+        self._pending_n: int | None = None
+        self._pending_embedding_dim: int | None = None
+        self._pending_modes: set[str] = set()
+        self._written_modes: set[str] = set()
 
-    def write_version(
+    def __enter__(self) -> "ArtifactWriter":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if self._pending_tmp_dir is not None:
+            shutil.rmtree(self._pending_tmp_dir, ignore_errors=True)
+            self._pending_tmp_dir = None
+            self._pending_version = None
+            self._pending_n = None
+            self._pending_embedding_dim = None
+            self._pending_modes = set()
+            self._written_modes = set()
+        return False
+
+    def begin_version(
         self,
         *,
         version: str,
+        modes: list[str],
+        embedding_dim: int,
         state_data: dict,
-        post_id_array: np.ndarray,            # shape (N,), int64
-        preset_artifacts: dict,               # mode -> (vectors: float16 (N,D), ann_index)
-        tag_vocab_data: dict,                  # {tag_id_str: tag_string}
+        post_id_array: np.ndarray,          # shape (N,), int64
+        tag_vocab_data: dict,               # {tag_id_str: tag_string}
         post_top_tags_list: list[list[tuple[int, float]]],
-        post_fav_count_array: np.ndarray,      # shape (N,), uint32
-        keep_versions: int = 3,
-    ) -> Path:
+        post_fav_count_array: np.ndarray,   # shape (N,), uint32
+    ) -> None:
+        if self._pending_tmp_dir is not None:
+            raise RuntimeError("begin_version() called while a version is already in progress")
+        if not modes:
+            raise ValueError("modes list is empty; at least one mode must be provided")
+
         versions_root = Path(self._model_dir) / "versions"
         versions_root.mkdir(parents=True, exist_ok=True)
 
-        # Write to a temp dir first, then rename atomically
+        if post_id_array.ndim != 1:
+            raise ValueError(f"post_id_array must be 1-D, got shape {post_id_array.shape}")
+        n = len(post_id_array)
+        if len(post_fav_count_array) != n:
+            raise ValueError(
+                f"post_fav_count_array length {len(post_fav_count_array)} != post_id_array length {n}"
+            )
+        if len(post_top_tags_list) != n:
+            raise ValueError(
+                f"post_top_tags_list length {len(post_top_tags_list)} != post_id_array length {n}"
+            )
+
         tmp_dir = Path(tempfile.mkdtemp(dir=versions_root, prefix="_tmp_"))
         try:
-            self._write_artifacts(
-                tmp_dir, version, state_data,
-                post_id_array, preset_artifacts,
-                tag_vocab_data, post_top_tags_list, post_fav_count_array,
+            # manifest
+            manifest = {
+                "version": version,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "n_posts": int(n),
+                "embedding_dim": embedding_dim,
+                "modes": modes,
+            }
+            layout.manifest(tmp_dir).write_bytes(orjson.dumps(manifest, option=orjson.OPT_INDENT_2))
+
+            # state
+            layout.state(tmp_dir).write_bytes(orjson.dumps(state_data, option=orjson.OPT_INDENT_2))
+
+            # shared arrays
+            np.save(str(layout.post_ids(tmp_dir)), post_id_array.astype(np.int64))
+            np.save(str(layout.fav_count(tmp_dir)), post_fav_count_array.astype(np.uint32))
+
+            # tag vocab (zstd-compressed JSON)
+            cctx = zstd.ZstdCompressor(level=3)
+            layout.tag_vocab(tmp_dir).write_bytes(cctx.compress(orjson.dumps(tag_vocab_data)))
+
+            # top tags binary
+            tt.encode(
+                post_top_tags_list,
+                layout.top_tags_offsets(tmp_dir),
+                layout.top_tags_payload(tmp_dir),
             )
-            final_dir = layout.version_dir(self._model_dir, version)
-            os.rename(tmp_dir, final_dir)
+
+            self._pending_tmp_dir = tmp_dir
+            self._pending_version = version
+            self._pending_n = n
+            self._pending_embedding_dim = embedding_dim
+            self._pending_modes = set(modes)
+            self._written_modes = set()
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
+    def write_mode(self, mode_name: str, hybrid: np.ndarray, ann) -> None:
+        if self._pending_tmp_dir is None:
+            raise RuntimeError("begin_version() must be called before write_mode()")
+        if hybrid.ndim != 2:
+            raise ValueError(f"mode {mode_name!r}: hybrid must be 2-D, got shape {hybrid.shape}")
+        if hybrid.shape[0] != self._pending_n:
+            raise ValueError(
+                f"mode {mode_name!r}: hybrid length {hybrid.shape[0]} != post count {self._pending_n}"
+            )
+        if hybrid.shape[1] != self._pending_embedding_dim:
+            raise ValueError(
+                f"mode {mode_name!r}: hybrid dim {hybrid.shape[1]} != manifest embedding_dim {self._pending_embedding_dim}"
+            )
+        if mode_name not in self._pending_modes:
+            raise ValueError(
+                f"write_mode() called with undeclared mode {mode_name!r}; "
+                f"declared modes: {sorted(self._pending_modes)}"
+            )
+        np.save(str(layout.post_vectors(self._pending_tmp_dir, mode_name)), hybrid.astype(np.float16, copy=False))
+        ann.save_index(str(layout.ann_index(self._pending_tmp_dir, mode_name)))
+        self._written_modes.add(mode_name)
+
+    def finalize_version(self, keep_versions: int = 3) -> Path:
+        if self._pending_tmp_dir is None:
+            raise RuntimeError("begin_version() must be called before finalize_version()")
+
+        missing = self._pending_modes - self._written_modes
+        if missing:
+            raise RuntimeError(
+                f"finalize_version() called before write_mode() for: {sorted(missing)}"
+            )
+
+        tmp_dir = self._pending_tmp_dir
+        version = self._pending_version
+
+        final_dir = layout.version_dir(self._model_dir, version)
+        try:
+            os.rename(tmp_dir, final_dir)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            self._pending_tmp_dir = None
+            self._pending_version = None
+            self._pending_n = None
+            self._pending_embedding_dim = None
+            self._pending_modes = set()
+            self._written_modes = set()
+            raise
+
+        self._pending_tmp_dir = None
+        self._pending_version = None
+        self._pending_n = None
+        self._pending_embedding_dim = None
+        self._pending_modes = set()
+        self._written_modes = set()
+
+        versions_root = Path(self._model_dir) / "versions"
         self._update_current_link(version)
         self._prune_old_versions(versions_root, keep_versions)
         return final_dir
-
-    def _write_artifacts(
-        self, vdir: Path, version: str, state_data: dict,
-        post_ids: np.ndarray, preset_artifacts: dict,
-        tag_vocab_data: dict,
-        post_top_tags_list: list[list[tuple[int, float]]],
-        post_fav_count: np.ndarray,
-    ) -> None:
-        vdir.mkdir(parents=True, exist_ok=True)
-
-        if not preset_artifacts:
-            raise ValueError("preset_artifacts is empty; at least one mode must be provided")
-
-        n = len(post_ids)
-        dims = set()
-        for mode_name, (vectors, _) in preset_artifacts.items():
-            if vectors.ndim != 2:
-                raise ValueError(f"mode {mode_name!r}: vectors must be 2-D, got shape {vectors.shape}")
-            if vectors.shape[0] != n:
-                raise ValueError(
-                    f"mode {mode_name!r}: vectors length {vectors.shape[0]} != post_ids length {n}"
-                )
-            dims.add(vectors.shape[1])
-        if len(dims) > 1:
-            raise ValueError(f"modes have inconsistent embedding dims: {dims}")
-
-        first_vectors = next(iter(preset_artifacts.values()))[0]
-
-        # manifest
-        manifest = {
-            "version": version,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "n_posts": int(len(post_ids)),
-            "embedding_dim": int(first_vectors.shape[1]) if first_vectors.ndim == 2 else 0,
-            "modes": list(preset_artifacts.keys()),
-        }
-        layout.manifest(vdir).write_bytes(orjson.dumps(manifest, option=orjson.OPT_INDENT_2))
-
-        # state
-        layout.state(vdir).write_bytes(orjson.dumps(state_data, option=orjson.OPT_INDENT_2))
-
-        # shared arrays
-        np.save(str(layout.post_ids(vdir)), post_ids.astype(np.int64))
-        np.save(str(layout.fav_count(vdir)), post_fav_count.astype(np.uint32))
-
-        # per-mode vectors and ANN indexes
-        for mode_name, (vectors, ann_index_obj) in preset_artifacts.items():
-            np.save(str(layout.post_vectors(vdir, mode_name)), vectors.astype(np.float16))
-            ann_index_obj.save_index(str(layout.ann_index(vdir, mode_name)))
-
-        # tag vocab (zstd-compressed JSON)
-        cctx = zstd.ZstdCompressor(level=3)
-        raw = orjson.dumps(tag_vocab_data)
-        layout.tag_vocab(vdir).write_bytes(cctx.compress(raw))
-
-        # top tags binary
-        tt.encode(
-            post_top_tags_list,
-            layout.top_tags_offsets(vdir),
-            layout.top_tags_payload(vdir),
-        )
 
     def _update_current_link(self, version: str) -> None:
         link = layout.current_link(self._model_dir)
