@@ -119,6 +119,26 @@ def test_empty_tag_string():
     assert result == []
 
 
+def test_duplicate_tags_accumulate_weight():
+    """A tag appearing more than once in tag_string has its weight summed."""
+    vocab = TagVocab()
+    tag_meta = {"mytag": TagMeta(category=0, post_count=10)}
+    single = compute_post_top_tags(
+        "mytag", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+    )
+    double = compute_post_top_tags(
+        "mytag mytag", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+    )
+    assert len(double) == 1
+    assert double[0][1] == pytest.approx(single[0][1] * 2, rel=1e-6)
+
+
 def test_n_top_limits_output():
     vocab = TagVocab()
     tags = [f"tag_{i}" for i in range(20)]
