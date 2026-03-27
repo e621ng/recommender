@@ -89,8 +89,8 @@ def test_category_multiplier_scales_weight():
     )
     by_id = {tid: w for tid, w in result}
     idf = _idf(n_posts, 10)
-    assert by_id[vocab._str_to_id["artist_tag"]] == pytest.approx(3.0 * idf, rel=1e-6)
-    assert by_id[vocab._str_to_id["general_tag"]] == pytest.approx(1.0 * idf, rel=1e-6)
+    assert by_id[vocab.get_or_add("artist_tag")] == pytest.approx(3.0 * idf, rel=1e-6)
+    assert by_id[vocab.get_or_add("general_tag")] == pytest.approx(1.0 * idf, rel=1e-6)
 
 
 def test_unknown_tag_fallback():
