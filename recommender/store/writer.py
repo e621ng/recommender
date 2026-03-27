@@ -59,7 +59,8 @@ class ArtifactWriter:
     ) -> None:
         vdir.mkdir(parents=True, exist_ok=True)
 
-        # Derive embedding_dim from the first preset's vectors
+        if not preset_artifacts:
+            raise ValueError("preset_artifacts is empty; at least one mode must be provided")
         first_vectors = next(iter(preset_artifacts.values()))[0]
 
         # manifest

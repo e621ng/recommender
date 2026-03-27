@@ -1,11 +1,7 @@
 """Pydantic request/response schemas."""
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
-
-Mode = Literal["favorites", "tags"]
 
 
 class FavCounts(BaseModel):

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from recommender.api import metrics as m
-from recommender.api.models import Mode, SimilarResponse
+from recommender.api.models import SimilarResponse
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ def similar(
     limit: int = Query(default=6, ge=1, le=20),
     explain: bool = Query(default=False),
     include_scores: bool = Query(default=True),
-    mode: Mode = Query(default="favorites", description="Recommendation mode"),
+    mode: str = Query(default="favorites", description="Recommendation mode"),
 ):
     engine = request.app.state.engine
     if engine is None:
@@ -29,6 +29,9 @@ def similar(
         result = engine.query(post_id=post_id, limit=limit, explain=explain, include_scores=include_scores, mode=mode)
         m.requests_total.labels(endpoint="/similar", status="200").inc()
         return result
+    except ValueError as exc:
+        m.requests_total.labels(endpoint="/similar", status="422").inc()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
         m.requests_total.labels(endpoint="/similar", status="500").inc()
         raise
