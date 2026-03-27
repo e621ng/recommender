@@ -1,6 +1,10 @@
 """Similarity query engine backed by a loaded ModelBundle."""
 from __future__ import annotations
 
+
+class UnknownModeError(ValueError):
+    pass
+
 import numpy as np
 
 from recommender.api.models import (
@@ -25,7 +29,7 @@ class SimilarityEngine:
     ) -> SimilarResponse:
         b = self._b
         if mode not in b.indexes:
-            raise ValueError(f"unknown mode {mode!r}")
+            raise UnknownModeError(f"unknown mode {mode!r}")
         idx = b.post_index.get(post_id)
         if idx is None:
             return SimilarResponse(post_id=post_id, model_version=b.version, results=[])

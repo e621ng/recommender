@@ -61,6 +61,20 @@ class ArtifactWriter:
 
         if not preset_artifacts:
             raise ValueError("preset_artifacts is empty; at least one mode must be provided")
+
+        n = len(post_ids)
+        dims = set()
+        for mode_name, (vectors, _) in preset_artifacts.items():
+            if vectors.ndim != 2:
+                raise ValueError(f"mode {mode_name!r}: vectors must be 2-D, got shape {vectors.shape}")
+            if vectors.shape[0] != n:
+                raise ValueError(
+                    f"mode {mode_name!r}: vectors length {vectors.shape[0]} != post_ids length {n}"
+                )
+            dims.add(vectors.shape[1])
+        if len(dims) > 1:
+            raise ValueError(f"modes have inconsistent embedding dims: {dims}")
+
         first_vectors = next(iter(preset_artifacts.values()))[0]
 
         # manifest
