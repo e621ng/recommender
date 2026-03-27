@@ -26,7 +26,9 @@ def create_app() -> FastAPI:
             bundle = reader.load_current()
             app.state.engine = SimilarityEngine(bundle, m_shared_tags=cfg.m_shared_tags)
             m.model_version_info.labels(version=bundle.version).set(1)
-            m.ann_index_size.set(bundle.ann.get_current_count())
+            if not bundle.indexes:
+                raise ValueError("loaded model bundle has no modes; manifest may be corrupt")
+            m.ann_index_size.set(next(iter(bundle.indexes.values())).get_current_count())
             log.info("api.model_loaded", version=bundle.version, n_posts=len(bundle.post_ids))
         except FileNotFoundError:
             log.warning("api.no_model", model_dir=cfg.model_dir,

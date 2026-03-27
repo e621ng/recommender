@@ -1,5 +1,14 @@
 """Single source of truth for artifact filenames within a version directory."""
+import re
 from pathlib import Path
+
+_SAFE_MODE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _checked_mode(mode: str) -> str:
+    if not _SAFE_MODE.match(mode):
+        raise ValueError(f"invalid mode name {mode!r}: only letters, digits, hyphens and underscores are allowed")
+    return mode
 
 
 def version_dir(model_dir: str, version: str) -> Path:
@@ -29,12 +38,12 @@ def post_ids(vdir: Path) -> Path:
     return vdir / "post_ids.npy"
 
 
-def post_vectors(vdir: Path) -> Path:
-    return vdir / "post_vectors.f16.npy"
+def post_vectors(vdir: Path, mode: str = "favorites") -> Path:
+    return vdir / f"post_vectors.{_checked_mode(mode)}.f16.npy"
 
 
-def ann_index(vdir: Path) -> Path:
-    return vdir / "ann.index"
+def ann_index(vdir: Path, mode: str = "favorites") -> Path:
+    return vdir / f"ann.{_checked_mode(mode)}.index"
 
 
 def tag_vocab(vdir: Path) -> Path:

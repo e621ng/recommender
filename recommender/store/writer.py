@@ -23,8 +23,7 @@ class ArtifactWriter:
         version: str,
         state_data: dict,
         post_id_array: np.ndarray,            # shape (N,), int64
-        post_vector_array: np.ndarray,         # shape (N, D), float16
-        ann_index_obj,                         # hnswlib index
+        preset_artifacts: dict,               # mode -> (vectors: float16 (N,D), ann_index)
         tag_vocab_data: dict,                  # {tag_id_str: tag_string}
         post_top_tags_list: list[list[tuple[int, float]]],
         post_fav_count_array: np.ndarray,      # shape (N,), uint32
@@ -38,7 +37,7 @@ class ArtifactWriter:
         try:
             self._write_artifacts(
                 tmp_dir, version, state_data,
-                post_id_array, post_vector_array, ann_index_obj,
+                post_id_array, preset_artifacts,
                 tag_vocab_data, post_top_tags_list, post_fav_count_array,
             )
             final_dir = layout.version_dir(self._model_dir, version)
@@ -53,32 +52,52 @@ class ArtifactWriter:
 
     def _write_artifacts(
         self, vdir: Path, version: str, state_data: dict,
-        post_ids: np.ndarray, post_vectors: np.ndarray, ann_index_obj,
+        post_ids: np.ndarray, preset_artifacts: dict,
         tag_vocab_data: dict,
         post_top_tags_list: list[list[tuple[int, float]]],
         post_fav_count: np.ndarray,
     ) -> None:
         vdir.mkdir(parents=True, exist_ok=True)
 
+        if not preset_artifacts:
+            raise ValueError("preset_artifacts is empty; at least one mode must be provided")
+
+        n = len(post_ids)
+        dims = set()
+        for mode_name, (vectors, _) in preset_artifacts.items():
+            if vectors.ndim != 2:
+                raise ValueError(f"mode {mode_name!r}: vectors must be 2-D, got shape {vectors.shape}")
+            if vectors.shape[0] != n:
+                raise ValueError(
+                    f"mode {mode_name!r}: vectors length {vectors.shape[0]} != post_ids length {n}"
+                )
+            dims.add(vectors.shape[1])
+        if len(dims) > 1:
+            raise ValueError(f"modes have inconsistent embedding dims: {dims}")
+
+        first_vectors = next(iter(preset_artifacts.values()))[0]
+
         # manifest
         manifest = {
             "version": version,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "n_posts": int(len(post_ids)),
-            "embedding_dim": int(post_vectors.shape[1]) if post_vectors.ndim == 2 else 0,
+            "embedding_dim": int(first_vectors.shape[1]) if first_vectors.ndim == 2 else 0,
+            "modes": list(preset_artifacts.keys()),
         }
         layout.manifest(vdir).write_bytes(orjson.dumps(manifest, option=orjson.OPT_INDENT_2))
 
         # state
         layout.state(vdir).write_bytes(orjson.dumps(state_data, option=orjson.OPT_INDENT_2))
 
-        # arrays
+        # shared arrays
         np.save(str(layout.post_ids(vdir)), post_ids.astype(np.int64))
-        np.save(str(layout.post_vectors(vdir)), post_vectors.astype(np.float16))
         np.save(str(layout.fav_count(vdir)), post_fav_count.astype(np.uint32))
 
-        # ANN index
-        ann_index_obj.save_index(str(layout.ann_index(vdir)))
+        # per-mode vectors and ANN indexes
+        for mode_name, (vectors, ann_index_obj) in preset_artifacts.items():
+            np.save(str(layout.post_vectors(vdir, mode_name)), vectors.astype(np.float16))
+            ann_index_obj.save_index(str(layout.ann_index(vdir, mode_name)))
 
         # tag vocab (zstd-compressed JSON)
         cctx = zstd.ZstdCompressor(level=3)

@@ -88,14 +88,16 @@ def run_backfill(cfg: Settings) -> None:
             top_tags = post_top_tags.get(int(pid), [])
             tag_matrix[i] = compute_tag_vector(top_tags, tag_emb, dim)
 
-        hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, cfg.w_cf, cfg.w_tag)
-
-        # --- Build ANN ---
-        log.info("backfill.building_index", n=n)
-        ann = build_index(
-            hybrid.astype(np.float32), post_id_arr,
-            m=cfg.hnsw_m, ef_construction=cfg.hnsw_ef_construction, ef_search=cfg.hnsw_ef_search,
-        )
+        # --- Build ANN index per mode ---
+        log.info("backfill.building_indexes", n=n, modes=list(cfg.weight_presets))
+        preset_artifacts: dict = {}
+        for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
+            hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
+            ann = build_index(
+                hybrid.astype(np.float32), post_id_arr,
+                m=cfg.hnsw_m, ef_construction=cfg.hnsw_ef_construction, ef_search=cfg.hnsw_ef_search,
+            )
+            preset_artifacts[mode_name] = (hybrid, ann)
 
         fav_arr = np.array([fav_count.get(int(p), 0) for p in post_id_arr], dtype=np.uint32)
         top_tags_list = [post_top_tags.get(int(p), []) for p in post_id_arr]
@@ -114,8 +116,7 @@ def run_backfill(cfg: Settings) -> None:
             version=version,
             state_data=state.to_dict(),
             post_id_array=post_id_arr,
-            post_vector_array=hybrid,
-            ann_index_obj=ann,
+            preset_artifacts=preset_artifacts,
             tag_vocab_data=vocab.to_dict(),
             post_top_tags_list=top_tags_list,
             post_fav_count_array=fav_arr,

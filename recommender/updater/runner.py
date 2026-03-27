@@ -65,18 +65,21 @@ def run_update(cfg: Settings) -> None:
 
         post_id_arr, cf_matrix = post_table.to_arrays()
         tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
-        hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, cfg.w_cf, cfg.w_tag)
 
-        # --- 5. Build ANN index ---
-        log.info("updater.building_index", n_posts=len(post_id_arr))
+        # --- 5. Build ANN index per mode ---
+        log.info("updater.building_indexes", n_posts=len(post_id_arr), modes=list(cfg.weight_presets))
         t_idx = time.time()
-        ann = build_index(
-            hybrid.astype(np.float32),
-            post_id_arr,
-            m=cfg.hnsw_m,
-            ef_construction=cfg.hnsw_ef_construction,
-            ef_search=cfg.hnsw_ef_search,
-        )
+        preset_artifacts: dict = {}
+        for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
+            hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
+            ann = build_index(
+                hybrid.astype(np.float32),
+                post_id_arr,
+                m=cfg.hnsw_m,
+                ef_construction=cfg.hnsw_ef_construction,
+                ef_search=cfg.hnsw_ef_search,
+            )
+            preset_artifacts[mode_name] = (hybrid, ann)
         metrics.index_rebuild_seconds.observe(time.time() - t_idx)
 
         # --- 6. Build fav_count array aligned with post_id_arr ---
@@ -92,8 +95,7 @@ def run_update(cfg: Settings) -> None:
             version=version,
             state_data=state.to_dict(),
             post_id_array=post_id_arr,
-            post_vector_array=hybrid,
-            ann_index_obj=ann,
+            preset_artifacts=preset_artifacts,
             tag_vocab_data=vocab.to_dict(),
             post_top_tags_list=top_tags_list,
             post_fav_count_array=fav_arr,
