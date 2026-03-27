@@ -66,10 +66,26 @@ def run_update(cfg: Settings) -> None:
         post_id_arr, cf_matrix = post_table.to_arrays()
         tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
 
-        # --- 5. Build ANN index per mode ---
+        # --- 5. Build aligned arrays and begin writing versioned artifacts ---
+        fav_arr = np.array([fav_count.get(int(pid), 0) for pid in post_id_arr], dtype=np.uint32)
+        top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
+
+        version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        writer = ArtifactWriter(cfg.model_dir)
+        writer.begin_version(
+            version=version,
+            modes=list(cfg.weight_presets),
+            embedding_dim=cfg.embedding_dim,
+            state_data=state.to_dict(),
+            post_id_array=post_id_arr,
+            tag_vocab_data=vocab.to_dict(),
+            post_top_tags_list=top_tags_list,
+            post_fav_count_array=fav_arr,
+        )
+
+        # --- 6. Build and write one ANN index per mode, freeing each before the next ---
         log.info("updater.building_indexes", n_posts=len(post_id_arr), modes=list(cfg.weight_presets))
         t_idx = time.time()
-        preset_artifacts: dict = {}
         for mode_name, (w_cf, w_tag) in cfg.weight_presets.items():
             hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, w_cf, w_tag)
             ann = build_index(
@@ -79,28 +95,11 @@ def run_update(cfg: Settings) -> None:
                 ef_construction=cfg.hnsw_ef_construction,
                 ef_search=cfg.hnsw_ef_search,
             )
-            preset_artifacts[mode_name] = (hybrid, ann)
+            writer.write_mode(mode_name, hybrid, ann)
+            del hybrid, ann
         metrics.index_rebuild_seconds.observe(time.time() - t_idx)
 
-        # --- 6. Build fav_count array aligned with post_id_arr ---
-        fav_arr = np.array([fav_count.get(int(pid), 0) for pid in post_id_arr], dtype=np.uint32)
-
-        # --- 7. Build post_top_tags list aligned with post_id_arr ---
-        top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
-
-        # --- 8. Write versioned artifacts ---
-        version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        writer = ArtifactWriter(cfg.model_dir)
-        writer.write_version(
-            version=version,
-            state_data=state.to_dict(),
-            post_id_array=post_id_arr,
-            preset_artifacts=preset_artifacts,
-            tag_vocab_data=vocab.to_dict(),
-            post_top_tags_list=top_tags_list,
-            post_fav_count_array=fav_arr,
-            keep_versions=cfg.keep_versions,
-        )
+        writer.finalize_version(keep_versions=cfg.keep_versions)
         log.info("updater.version_promoted", version=version)
 
         # --- 8. Save training artifacts ---
