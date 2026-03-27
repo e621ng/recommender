@@ -12,7 +12,7 @@ from recommender.config import Settings
 from recommender.model.ann import build_index
 from recommender.model.embeddings import EmbeddingTable, apply_event_batch
 from recommender.model.hybrid import compute_hybrid_vectors
-from recommender.model.tags import TagVocab, compute_post_top_tags, compute_tag_vector
+from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags, compute_tag_vector
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.layout import (
     user_embeddings as ue_path,
@@ -48,11 +48,19 @@ def run_update(cfg: Settings) -> None:
         n_events = _consume_events(conn, state, user_table, post_table, fav_count, cfg)
         log.info("updater.events_done", n_events=n_events, watermark=state.last_event_id)
 
-        # --- 2. Refresh changed posts/tags ---
-        n_posts = _refresh_posts(conn, state, vocab, post_top_tags, tag_emb, cfg)
+        # --- 2. Fetch tag metadata for weight computation ---
+        tag_metadata = {
+            name: TagMeta(category=cat, post_count=cnt)
+            for name, (cat, cnt) in dbmod.fetch_tag_metadata(conn).items()
+        }
+        n_posts_total = dbmod.fetch_post_count(conn)
+        log.info("updater.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
+
+        # --- 3. Refresh changed posts/tags ---
+        n_posts = _refresh_posts(conn, state, vocab, post_top_tags, tag_emb, tag_metadata, n_posts_total, cfg)
         log.info("updater.posts_done", n_posts=n_posts)
 
-        # --- 3. Compute hybrid vectors ---
+        # --- 4. Compute hybrid vectors ---
         post_ids_list = post_table.ids()
         if not post_ids_list:
             log.warning("updater.no_posts")
@@ -62,7 +70,7 @@ def run_update(cfg: Settings) -> None:
         tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
         hybrid = compute_hybrid_vectors(cf_matrix, tag_matrix, cfg.w_cf, cfg.w_tag)
 
-        # --- 4. Build ANN index ---
+        # --- 5. Build ANN index ---
         log.info("updater.building_index", n_posts=len(post_id_arr))
         t_idx = time.time()
         ann = build_index(
@@ -74,13 +82,13 @@ def run_update(cfg: Settings) -> None:
         )
         metrics.index_rebuild_seconds.observe(time.time() - t_idx)
 
-        # --- 5. Build fav_count array aligned with post_id_arr ---
+        # --- 6. Build fav_count array aligned with post_id_arr ---
         fav_arr = np.array([fav_count.get(int(pid), 0) for pid in post_id_arr], dtype=np.uint32)
 
-        # --- 6. Build post_top_tags list aligned with post_id_arr ---
+        # --- 7. Build post_top_tags list aligned with post_id_arr ---
         top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
 
-        # --- 7. Write versioned artifacts ---
+        # --- 8. Write versioned artifacts ---
         version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         writer = ArtifactWriter(cfg.model_dir)
         writer.write_version(
@@ -223,6 +231,8 @@ def _refresh_posts(
     vocab: TagVocab,
     post_top_tags: dict[int, list[tuple[int, float]]],
     tag_emb: np.ndarray,
+    tag_metadata: dict[str, TagMeta],
+    n_posts_total: int,
     cfg: Settings,
 ) -> int:
     import orjson
@@ -234,7 +244,13 @@ def _refresh_posts(
 
     for batch in dbmod.fetch_changed_posts_batches(conn, after_dt, cfg.posts_batch_size):
         for post in batch:
-            top_tags = compute_post_top_tags(post.tag_string, vocab, cfg.n_top_tags)
+            top_tags = compute_post_top_tags(
+                post.tag_string, vocab,
+                n_top=cfg.n_top_tags,
+                n_posts=n_posts_total,
+                tag_metadata=tag_metadata,
+                category_multipliers=cfg.category_multipliers,
+            )
             post_top_tags[post.id] = top_tags
             if post.updated_at > max_seen:
                 max_seen = post.updated_at

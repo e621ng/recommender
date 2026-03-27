@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from recommender.api.models import (
-    Explanation, FavCounts, ScoreBreakdown, SimilarResponse, SimilarResult,
+    Explanation, FavCounts, SimilarResponse, SimilarResult,
 )
 from recommender.model.ann import query_index
 from recommender.store.reader import ModelBundle
@@ -64,16 +64,6 @@ class SimilarityEngine:
         shared = _intersect_top(a_tags, c_tags, self._m)
         shared_names = [b.tag_name(tid) for tid, _ in shared]
 
-        # Score breakdown: cosine of raw component vectors
-        q_vec = b.post_vectors[query_idx].astype(np.float32)
-        c_vec = b.post_vectors[cand_idx].astype(np.float32)
-        # For now, both components are encoded in the single hybrid vector;
-        # report the hybrid score as "cf" and 0.0 tag (components not stored separately in serving)
-        combined = float(np.dot(q_vec, c_vec) / (
-            (np.linalg.norm(q_vec) or 1.0) * (np.linalg.norm(c_vec) or 1.0)
-        ))
-        breakdown = ScoreBreakdown(cf=round(combined, 4), tag=0.0)
-
         fav_counts = FavCounts(
             query=int(b.fav_count[query_idx]),
             candidate=int(b.fav_count[cand_idx]),
@@ -81,7 +71,6 @@ class SimilarityEngine:
 
         return Explanation(
             shared_tags=shared_names,
-            score_breakdown=breakdown,
             fav_counts=fav_counts,
         )
 

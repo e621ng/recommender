@@ -12,7 +12,7 @@ from recommender.config import Settings
 from recommender.model.ann import build_index
 from recommender.model.embeddings import EmbeddingTable, apply_event_batch
 from recommender.model.hybrid import compute_hybrid_vectors
-from recommender.model.tags import TagVocab, compute_post_top_tags, compute_tag_vector
+from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags, compute_tag_vector
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.writer import ArtifactWriter
 from recommender.updater import db as dbmod
@@ -35,13 +35,27 @@ def run_backfill(cfg: Settings) -> None:
 
     conn = dbmod.connect_with_retry(cfg.db_dsn)
     try:
+        # --- Fetch tag metadata for weight computation ---
+        tag_metadata = {
+            name: TagMeta(category=cat, post_count=cnt)
+            for name, (cat, cnt) in dbmod.fetch_tag_metadata(conn).items()
+        }
+        n_posts_total = dbmod.fetch_post_count(conn)
+        log.info("backfill.tag_metadata_fetched", n_tags=len(tag_metadata), n_posts=n_posts_total)
+
         # --- Scan all posts first (build vocab) ---
         log.info("backfill.posts_start")
         n_posts = 0
         max_updated_at = datetime(1970, 1, 1)
         for batch in dbmod.fetch_all_posts(conn, cfg.posts_batch_size):
             for post in batch:
-                top_tags = compute_post_top_tags(post.tag_string, vocab, cfg.n_top_tags)
+                top_tags = compute_post_top_tags(
+                    post.tag_string, vocab,
+                    n_top=cfg.n_top_tags,
+                    n_posts=n_posts_total,
+                    tag_metadata=tag_metadata,
+                    category_multipliers=cfg.category_multipliers,
+                )
                 post_top_tags[post.id] = top_tags
                 if post.updated_at and post.updated_at > max_updated_at:
                     max_updated_at = post.updated_at

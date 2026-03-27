@@ -9,14 +9,8 @@ class FavCounts(BaseModel):
     candidate: int
 
 
-class ScoreBreakdown(BaseModel):
-    cf: float
-    tag: float
-
-
 class Explanation(BaseModel):
     shared_tags: list[str]
-    score_breakdown: ScoreBreakdown
     fav_counts: FavCounts | None = None
 
 

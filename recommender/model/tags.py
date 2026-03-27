@@ -1,7 +1,16 @@
 """Tag vocabulary and per-post tag feature computation."""
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+
 import numpy as np
+
+
+@dataclass
+class TagMeta:
+    category: int
+    post_count: int
 
 
 class TagVocab:
@@ -38,17 +47,31 @@ class TagVocab:
 def compute_post_top_tags(
     tag_string: str,
     vocab: TagVocab,
-    n_top: int = 50,
+    n_top: int,
+    n_posts: int,
+    tag_metadata: dict[str, TagMeta],
+    category_multipliers: dict[int, float],
 ) -> list[tuple[int, float]]:
     """
-    Parse a space-separated tag string, assign weight 1.0 per tag,
-    return top-N (tag_id, weight) sorted by tag_id (for O(N) intersection).
+    Parse a space-separated tag string, compute a weight per tag from its
+    category multiplier and IDF score, return top-N (tag_id, weight) sorted
+    by tag_id (for O(N) intersection during explainability).
+
+    Tags with a category multiplier of 0.0 (invalid) are excluded entirely.
+    Unknown tags (not in tag_metadata) fall back to category 0, post_count 1.
     """
     tags = tag_string.split() if tag_string else []
     seen: dict[int, float] = {}
     for t in tags:
+        meta = tag_metadata.get(t, TagMeta(category=0, post_count=1))
+        multiplier = category_multipliers.get(meta.category, 1.0)
+        if multiplier == 0.0:
+            continue
+        idf = math.log((n_posts + 1) / (meta.post_count + 1)) + 1.0
+        weight = multiplier * idf
         tid = vocab.get_or_add(t)
-        seen[tid] = seen.get(tid, 0.0) + 1.0
+        # accumulate in case of duplicate tags in the string (shouldn't happen, but safe)
+        seen[tid] = seen.get(tid, 0.0) + weight
 
     # sort by weight descending, take top N, then re-sort by tag_id for intersection
     top = sorted(seen.items(), key=lambda x: -x[1])[:n_top]

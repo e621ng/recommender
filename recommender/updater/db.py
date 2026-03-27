@@ -129,6 +129,20 @@ def fetch_all_favorites(
             break
 
 
+def fetch_tag_metadata(conn: psycopg.Connection) -> dict[str, tuple[int, int]]:
+    """Return {tag_name: (category, post_count)} for all non-invalid tags."""
+    rows = conn.execute(
+        "SELECT name, category, post_count FROM public.tags WHERE category != 6"
+    ).fetchall()
+    return {name: (category, post_count) for name, category, post_count in rows}
+
+
+def fetch_post_count(conn: psycopg.Connection) -> int:
+    """Return total number of posts."""
+    row = conn.execute("SELECT COUNT(*) FROM public.posts").fetchone()
+    return int(row[0])
+
+
 def fetch_all_posts(
     conn: psycopg.Connection,
     batch_size: int = 10_000,
