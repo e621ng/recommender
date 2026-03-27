@@ -148,6 +148,23 @@ ln -sfn /models/versions/<old-version> /models/current
 ```
 
 
+## Development
+
+Install [uv](https://docs.astral.sh/uv/), then:
+
+```sh
+# Install dependencies including test extras
+uv sync --extra dev
+
+# Run tests
+uv run pytest tests/
+```
+
+Tests cover the core model logic (embeddings, tag weighting, vector blending,
+binary serialization) and run in under a second with no database or model
+artifacts required.
+
+
 ## Observability
 
 Prometheus metrics are exposed at `/metrics`:
