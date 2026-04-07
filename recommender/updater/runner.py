@@ -212,23 +212,39 @@ def _save_training_state(
     np.save(str(tdir / "tag_embeddings.f32.npy"), tag_emb)
 
 
+_PARTITION_RETENTION_DAYS = 14
+
+
 def _consume_events(
     conn, state: UpdaterState,
     user_table: EmbeddingTable, post_table: EmbeddingTable,
     fav_count: dict[int, int], cfg: Settings,
 ) -> int:
     import orjson
+    from datetime import timedelta
     from recommender.store.layout import training_dir
     tdir = Path(training_dir(cfg.model_dir))
+
+    if state.last_event_id > 0:
+        age = datetime.utcnow() - state.last_event_created_at_dt()
+        if age.days >= _PARTITION_RETENTION_DAYS - 1:
+            raise RuntimeError(
+                f"Event watermark is {age.days} days old — partitions holding events since "
+                f"{state.last_event_created_at} may have been dropped. "
+                "Rebuild from a backfill before resuming incremental updates."
+            )
 
     n_total = 0
     max_db_event_id = dbmod.fetch_max_event_id(conn)
     metrics.event_lag.set(max(0, max_db_event_id - state.last_event_id))
 
-    for batch in dbmod.fetch_event_batches(conn, state.last_event_id, cfg.events_batch_size):
+    for batch in dbmod.fetch_event_batches(
+        conn, state.last_event_id, state.last_event_created_at_dt(), cfg.events_batch_size
+    ):
         events = [(e.user_id, e.post_id, e.action) for e in batch]
         apply_event_batch(user_table, post_table, fav_count, events, cfg.sgd_lr, cfg.sgd_reg)
         state.last_event_id = batch[-1].event_id
+        state.last_event_created_at = batch[-1].created_at.isoformat()
         n_total += len(batch)
         metrics.events_processed_total.inc(len(batch))
         metrics.current_watermark.set(state.last_event_id)

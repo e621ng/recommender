@@ -56,9 +56,15 @@ def fetch_max_updated_at(conn: psycopg.Connection) -> datetime | None:
 def fetch_event_batches(
     conn: psycopg.Connection,
     after_event_id: int,
+    after_created_at: datetime,
     batch_size: int = 50_000,
 ) -> Generator[list[FavoriteEvent], None, None]:
-    """Yield batches of FavoriteEvent ordered by event_id."""
+    """Yield batches of FavoriteEvent ordered by event_id.
+
+    after_created_at should be the created_at of the last processed event.
+    It is used as a partition pruning hint (>= bound) so the planner can skip
+    older daily partitions; event_id remains the authoritative cursor.
+    """
     last_id = after_event_id
     while True:
         rows = conn.execute(
@@ -66,10 +72,11 @@ def fetch_event_batches(
             SELECT event_id, user_id, post_id, action, created_at
             FROM public.favorite_events
             WHERE event_id > %s
+              AND created_at >= %s
             ORDER BY event_id
             LIMIT %s
             """,
-            (last_id, batch_size),
+            (last_id, after_created_at, batch_size),
         ).fetchall()
         if not rows:
             break
