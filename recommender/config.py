@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Category weight multipliers (category values per e621ng schema)
     tag_weight_general: float = Field(default=1.0)    # category 0
-    tag_weight_artist: float = Field(default=3.0)     # category 1
+    tag_weight_artist: float = Field(default=0.3)     # category 1
     tag_weight_copyright: float = Field(default=1.5)  # category 3
     tag_weight_character: float = Field(default=2.5)  # category 4
     tag_weight_species: float = Field(default=2.0)    # category 5

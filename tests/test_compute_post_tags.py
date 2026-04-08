@@ -7,7 +7,7 @@ from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags
 # Mirrors the defaults in config.py
 CAT_MULTS = {
     0: 1.0,   # general
-    1: 3.0,   # artist
+    1: 0.3,   # artist
     3: 1.5,   # copyright
     4: 2.5,   # character
     5: 2.0,   # species
@@ -89,7 +89,7 @@ def test_category_multiplier_scales_weight():
     )
     by_id = {tid: w for tid, w in result}
     idf = _idf(n_posts, 10)
-    assert by_id[vocab.get_or_add("artist_tag")] == pytest.approx(3.0 * idf, rel=1e-6)
+    assert by_id[vocab.get_or_add("artist_tag")] == pytest.approx(0.3 * idf, rel=1e-6)
     assert by_id[vocab.get_or_add("general_tag")] == pytest.approx(1.0 * idf, rel=1e-6)
 
 
