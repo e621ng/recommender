@@ -51,6 +51,7 @@ def compute_post_top_tags(
     n_posts: int,
     tag_metadata: dict[str, TagMeta],
     category_multipliers: dict[int, float],
+    excluded_tags: set[str] = frozenset(),
 ) -> list[tuple[int, float]]:
     """
     Parse a space-separated tag string, compute a weight per tag from its
@@ -63,6 +64,8 @@ def compute_post_top_tags(
     tags = tag_string.split() if tag_string else []
     seen: dict[int, float] = {}
     for t in tags:
+        if t in excluded_tags:
+            continue
         meta = tag_metadata.get(t, TagMeta(category=0, post_count=1))
         multiplier = category_multipliers.get(meta.category, 1.0)
         if multiplier == 0.0:

@@ -265,6 +265,7 @@ def _refresh_posts(
                 n_posts=n_posts_total,
                 tag_metadata=tag_metadata,
                 category_multipliers=cat_multipliers,
+                excluded_tags=cfg.excluded_tags,
             )
             post_top_tags[post.id] = top_tags
             if post.updated_at > max_seen:

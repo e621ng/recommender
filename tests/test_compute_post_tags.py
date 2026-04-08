@@ -151,3 +151,35 @@ def test_n_top_limits_output():
     assert len(result) == 5
     ids = [tid for tid, _ in result]
     assert ids == sorted(ids), "truncated output must still be sorted by tag_id"
+
+
+def test_excluded_tags_skipped():
+    """Tags in excluded_tags are absent from output and never added to the vocab."""
+    vocab = TagVocab()
+    tag_meta = {
+        "good": TagMeta(category=0, post_count=1),
+        "avoid_posting": TagMeta(category=7, post_count=1),  # valid category, but excluded
+    }
+    result = compute_post_top_tags(
+        "good avoid_posting", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+        excluded_tags={"avoid_posting"},
+    )
+    assert len(result) == 1
+    assert result[0][0] == vocab.get_or_add("good")
+    assert "avoid_posting" not in vocab._str_to_id
+
+
+def test_excluded_tags_default_is_empty():
+    """Omitting excluded_tags is equivalent to passing an empty set."""
+    vocab = TagVocab()
+    tag_meta = {"mytag": TagMeta(category=0, post_count=1)}
+    result = compute_post_top_tags(
+        "mytag", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+    )
+    assert len(result) == 1

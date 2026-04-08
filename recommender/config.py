@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Per-post top-tag limit
     n_top_tags: int = Field(default=100)
 
+    # Tags to exclude from the model regardless of category
+    excluded_tags: set[str] = Field(default_factory=set)
+
     # Category weight multipliers (category values per e621ng schema)
     tag_weight_general: float = Field(default=1.0)    # category 0
     tag_weight_artist: float = Field(default=0.3)     # category 1
