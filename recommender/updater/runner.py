@@ -221,12 +221,12 @@ def _consume_events(
     fav_count: dict[int, int], cfg: Settings,
 ) -> int:
     import orjson
-    from datetime import timedelta
     from recommender.store.layout import training_dir
     tdir = Path(training_dir(cfg.model_dir))
 
-    if state.last_event_id > 0:
-        age = datetime.utcnow() - state.last_event_created_at_dt()
+    # Skip the check if last_event_created_at is still the default (pre-migration state)
+    if state.last_event_id > 0 and state.last_event_created_at != "1970-01-01T00:00:00":
+        age = datetime.now(timezone.utc).replace(tzinfo=None) - state.last_event_created_at_dt()
         if age.days >= _PARTITION_RETENTION_DAYS - 1:
             raise RuntimeError(
                 f"Event watermark is {age.days} days old — partitions holding events since "
