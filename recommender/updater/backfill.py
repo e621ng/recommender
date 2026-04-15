@@ -34,7 +34,6 @@ def run_backfill(cfg: Settings) -> None:
     post_top_tags: dict[int, list[tuple[int, float]]] = {}
 
     conn = dbmod.connect_with_retry(cfg.db_dsn)
-    conn.execute("SET statement_timeout = 0")
     try:
         # --- Fetch tag metadata for weight computation ---
         tag_metadata = dbmod.fetch_tag_metadata(conn)

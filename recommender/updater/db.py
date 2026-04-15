@@ -117,22 +117,16 @@ def fetch_all_favorites(
     batch_size: int = 50_000,
 ) -> Generator[list[tuple[int, int]], None, None]:
     """Yield (user_id, post_id) pairs from the full favorites table (backfill)."""
-    last_user_id = -1
-    last_post_id = -1
+    offset = 0
     while True:
         rows = conn.execute(
-            """
-            SELECT user_id, post_id FROM public.favorites
-            WHERE (user_id, post_id) > (%s, %s)
-            ORDER BY user_id, post_id
-            LIMIT %s
-            """,
-            (last_user_id, last_post_id, batch_size),
+            "SELECT user_id, post_id FROM public.favorites ORDER BY user_id, post_id LIMIT %s OFFSET %s",
+            (batch_size, offset),
         ).fetchall()
         if not rows:
             break
         yield [(r[0], r[1]) for r in rows]
-        last_user_id, last_post_id = rows[-1]
+        offset += len(rows)
         if len(rows) < batch_size:
             break
 
