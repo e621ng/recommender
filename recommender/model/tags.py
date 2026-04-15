@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,7 +52,7 @@ def compute_post_top_tags(
     n_posts: int,
     tag_metadata: dict[str, TagMeta],
     category_multipliers: dict[int, float],
-    excluded_tags: set[str] = frozenset(),
+    excluded_tags: AbstractSet[str] = frozenset(),
 ) -> list[tuple[int, float]]:
     """
     Parse a space-separated tag string, compute a weight per tag from its

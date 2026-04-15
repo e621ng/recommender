@@ -169,7 +169,7 @@ def test_excluded_tags_skipped():
     )
     assert len(result) == 1
     assert result[0][0] == vocab.get_or_add("good")
-    assert "avoid_posting" not in vocab._str_to_id
+    assert "avoid_posting" not in vocab.to_dict().values()
 
 
 def test_excluded_tags_default_is_empty():
