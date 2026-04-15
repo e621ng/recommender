@@ -7,7 +7,7 @@ from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags
 # Mirrors the defaults in config.py
 CAT_MULTS = {
     0: 1.0,   # general
-    1: 3.0,   # artist
+    1: 0.3,   # artist
     3: 1.5,   # copyright
     4: 2.5,   # character
     5: 2.0,   # species
@@ -89,7 +89,7 @@ def test_category_multiplier_scales_weight():
     )
     by_id = {tid: w for tid, w in result}
     idf = _idf(n_posts, 10)
-    assert by_id[vocab.get_or_add("artist_tag")] == pytest.approx(3.0 * idf, rel=1e-6)
+    assert by_id[vocab.get_or_add("artist_tag")] == pytest.approx(0.3 * idf, rel=1e-6)
     assert by_id[vocab.get_or_add("general_tag")] == pytest.approx(1.0 * idf, rel=1e-6)
 
 
@@ -151,3 +151,35 @@ def test_n_top_limits_output():
     assert len(result) == 5
     ids = [tid for tid, _ in result]
     assert ids == sorted(ids), "truncated output must still be sorted by tag_id"
+
+
+def test_excluded_tags_skipped():
+    """Tags in excluded_tags are absent from output and never added to the vocab."""
+    vocab = TagVocab()
+    tag_meta = {
+        "good": TagMeta(category=0, post_count=1),
+        "avoid_posting": TagMeta(category=7, post_count=1),  # valid category, but excluded
+    }
+    result = compute_post_top_tags(
+        "good avoid_posting", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+        excluded_tags={"avoid_posting"},
+    )
+    assert len(result) == 1
+    assert result[0][0] == vocab.get_or_add("good")
+    assert "avoid_posting" not in vocab.to_dict().values()
+
+
+def test_excluded_tags_default_is_empty():
+    """Omitting excluded_tags is equivalent to passing an empty set."""
+    vocab = TagVocab()
+    tag_meta = {"mytag": TagMeta(category=0, post_count=1)}
+    result = compute_post_top_tags(
+        "mytag", vocab,
+        n_top=10, n_posts=100,
+        tag_metadata=tag_meta,
+        category_multipliers=CAT_MULTS,
+    )
+    assert len(result) == 1
