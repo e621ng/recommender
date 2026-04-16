@@ -16,6 +16,7 @@ from recommender.model.tags import TagVocab, compute_post_top_tags, compute_tag_
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.writer import ArtifactWriter
 from recommender.updater import db as dbmod
+from recommender.store.post_top_tags_store import PostTopTagsStore
 from recommender.updater.state import UpdaterState, save_state
 
 log = structlog.get_logger(__name__)
@@ -148,9 +149,7 @@ def run_backfill(cfg: Settings) -> None:
         np.save(str(tdir / "post_ids_cf.npy"), p_ids)
         np.save(str(tdir / "tag_embeddings.f32.npy"), tag_emb)
         (tdir / "tag_vocab_training.json").write_bytes(orjson.dumps(vocab.to_dict()))
-        (tdir / "post_top_tags.pkl.json").write_bytes(
-            orjson.dumps({str(k): v for k, v in post_top_tags.items()})
-        )
+        PostTopTagsStore.from_dict(post_top_tags).save(tdir)
         (tdir / "fav_count.json").write_bytes(
             orjson.dumps({str(k): v for k, v in fav_count.items()})
         )

@@ -13,6 +13,7 @@ from recommender.model.ann import build_index
 from recommender.model.embeddings import EmbeddingTable, apply_event_batch
 from recommender.model.hybrid import compute_hybrid_vectors
 from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags, compute_tag_vector
+from recommender.store.post_top_tags_store import PostTopTagsStore
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.layout import (
     user_embeddings as ue_path,
@@ -80,11 +81,13 @@ def run_update(cfg: Settings) -> None:
             dest = [i for i, pid in enumerate(all_post_ids) if pid in cf_lookup]
             src  = [cf_lookup[pid] for pid in all_post_ids if pid in cf_lookup]
             cf_matrix[dest] = cf_vecs[src]
-        tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
+        # Fetch all tag lists in one O(N + Q) two-pointer scan rather than
+        # Q individual O(log N) .get() calls.
+        top_tags_list = post_top_tags.get_many(post_id_arr)
+        tag_matrix = _build_tag_matrix(top_tags_list, tag_emb, cfg.embedding_dim)
 
         # --- 5. Build aligned arrays and begin writing versioned artifacts ---
         fav_arr = np.array([fav_count.get(int(pid), 0) for pid in post_id_arr], dtype=np.uint32)
-        top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
 
         version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with ArtifactWriter(cfg.model_dir) as writer:
@@ -136,7 +139,7 @@ def run_update(cfg: Settings) -> None:
 
 def _load_training_state(
     tdir: Path, cfg: Settings
-) -> tuple[EmbeddingTable, EmbeddingTable, np.ndarray, TagVocab, dict, dict]:
+) -> tuple[EmbeddingTable, EmbeddingTable, np.ndarray, TagVocab, PostTopTagsStore, dict]:
     import orjson
     import zstandard as zstd
     from recommender.store.layout import tag_vocab, current_link, version_dir
@@ -170,12 +173,8 @@ def _load_training_state(
     else:
         vocab = TagVocab()
 
-    # Post top tags
-    ptt_path = tdir / "post_top_tags.pkl.json"  # stored as orjson
-    post_top_tags: dict[int, list[tuple[int, float]]] = {}
-    if ptt_path.exists():
-        raw = orjson.loads(ptt_path.read_bytes())
-        post_top_tags = {int(k): [tuple(x) for x in v] for k, v in raw.items()}
+    # Post top tags — binary store (auto-migrates legacy JSON if small enough)
+    post_top_tags = PostTopTagsStore.load(tdir)
 
     # Fav count
     fc_path = tdir / "fav_count.json"
@@ -259,7 +258,7 @@ def _consume_events(
 def _refresh_posts(
     conn, state: UpdaterState,
     vocab: TagVocab,
-    post_top_tags: dict[int, list[tuple[int, float]]],
+    post_top_tags: PostTopTagsStore,
     tag_emb: np.ndarray,
     tag_metadata: dict[str, TagMeta],
     n_posts_total: int,
@@ -301,9 +300,8 @@ def _refresh_posts(
 
     # Persist vocab and top tags
     (tdir / "tag_vocab_training.json").write_bytes(orjson.dumps(vocab.to_dict()))
-    (tdir / "post_top_tags.pkl.json").write_bytes(
-        orjson.dumps({str(k): v for k, v in post_top_tags.items()})
-    )
+    if post_top_tags.is_dirty:
+        post_top_tags.save(tdir)
 
     if max_seen > after_dt:
         state.last_posts_updated_at = max_seen.isoformat()
@@ -312,14 +310,12 @@ def _refresh_posts(
 
 
 def _build_tag_matrix(
-    post_id_arr: np.ndarray,
-    post_top_tags: dict[int, list[tuple[int, float]]],
+    top_tags_list: list[list[tuple[int, float]]],
     tag_emb: np.ndarray,
     dim: int,
 ) -> np.ndarray:
-    n = len(post_id_arr)
+    n = len(top_tags_list)
     matrix = np.zeros((n, dim), dtype=np.float32)
-    for i, pid in enumerate(post_id_arr.tolist()):
-        top_tags = post_top_tags.get(int(pid), [])
+    for i, top_tags in enumerate(top_tags_list):
         matrix[i] = compute_tag_vector(top_tags, tag_emb, dim)
     return matrix
