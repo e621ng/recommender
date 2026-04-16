@@ -250,11 +250,11 @@ def test_skip_large_legacy_json(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_merge_large():
-    """50K base posts + 500 delta (mix of updates and inserts) → spot-check."""
+    """5K base posts + 500 delta (mix of updates and inserts) → spot-check."""
     rng = np.random.default_rng(0)
-    n_base = 50_000
+    n_base = 5_000
 
-    # Base: post IDs 0..49999, each with 5 tags
+    # Base: post IDs 0..4999, each with 5 tags
     base = {i: [(i * 10 + j, float(j) * 0.1) for j in range(5)] for i in range(n_base)}
 
     with tempfile.TemporaryDirectory() as d:

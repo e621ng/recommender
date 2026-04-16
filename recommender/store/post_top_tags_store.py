@@ -119,7 +119,7 @@ class PostTopTagsStore:
         payload_exists = payload_path.exists()
 
         if ids_exists and offsets_exists and payload_exists:
-            post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64)
+            post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64, copy=False)
             offsets  = np.fromfile(str(offsets_path), dtype=np.uint64)
             payload  = payload_path.read_bytes()
             log.debug("post_top_tags_store.loaded_binary", n_posts=len(post_ids))
@@ -275,6 +275,15 @@ class PostTopTagsStore:
             else (memoryview(self._payload) if self._payload else None)
         )
 
+        # Refuse to proceed if base IDs exist but the payload is unreadable —
+        # the merge would emit empty chunks for every base entry, silently
+        # wiping all existing tags.
+        if n_base > 0 and old_mv is None:
+            raise RuntimeError(
+                "PostTopTagsStore.save(): base IDs exist but payload is unreadable; "
+                "refusing to save to avoid data loss. Reload the store from disk first."
+            )
+
         with open(payload_tmp, "wb") as f:
             bi = 0  # base pointer
             di = 0  # delta pointer
@@ -315,10 +324,15 @@ class PostTopTagsStore:
         np.save(str(ids_tmp), new_ids_arr)
         new_offsets_arr.tofile(str(offsets_tmp))
 
-        # Atomic rename: all three files replace their targets in sequence.
-        # If a crash occurs mid-sequence, load() will detect the partial state
-        # via the partial-store warning and either backfill or the next run
-        # will overwrite cleanly.
+        # Publish: unlink old targets first so that any crash during the
+        # following renames leaves the partial state detectable by load() as an
+        # incomplete store (one or more files missing) rather than a silently
+        # mixed-generation complete-looking store.
+        for _old in (payload_path, offsets_path, ids_path):
+            try:
+                _old.unlink()
+            except FileNotFoundError:
+                pass
         payload_tmp.replace(payload_path)
         offsets_tmp.replace(offsets_path)
         ids_tmp.replace(ids_path)
