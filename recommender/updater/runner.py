@@ -298,7 +298,8 @@ def _refresh_posts(
 
     # Persist vocab and top tags
     (tdir / "tag_vocab_training.json").write_bytes(orjson.dumps(vocab.to_dict()))
-    post_top_tags.save(tdir)
+    if post_top_tags.is_dirty:
+        post_top_tags.save(tdir)
 
     if max_seen > after_dt:
         state.last_posts_updated_at = max_seen.isoformat()

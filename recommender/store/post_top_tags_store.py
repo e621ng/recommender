@@ -12,7 +12,9 @@ positional array index; the training cache needs lookup by post ID.
 
 Writes accumulate in an in-memory delta dict and are merged into the binary
 base on save().  The two-pointer merge streams the old payload directly to the
-new file without buffering a second copy in RAM.
+new file without buffering a second copy in RAM.  All three output files are
+written to .tmp siblings first and then atomically renamed so load() always
+sees a consistent generation.
 """
 from __future__ import annotations
 
@@ -70,6 +72,7 @@ class PostTopTagsStore:
         store[post_id] = tags          (__setitem__ → delta)
         store.get(post_id, [])         (delta first, then base binary)
         set(store.keys())              (union of base IDs and delta keys)
+        store.is_dirty                 (True if any unsaved changes)
     """
 
     def __init__(
@@ -100,8 +103,10 @@ class PostTopTagsStore:
         Load from tdir.  Priority:
 
         1. All 3 binary files present → load and return.
-        2. Legacy JSON ≤ _MIGRATE_LIMIT → auto-migrate to binary, return.
-        3. Legacy JSON too large, or no files → return empty store (backfill
+        2. Some but not all binary files present → warn (partial/corrupt store),
+           fall through to JSON or empty.
+        3. Legacy JSON ≤ _MIGRATE_LIMIT → auto-migrate to binary, return.
+        4. Legacy JSON too large, or no files → return empty store (backfill
            required to repopulate).
         """
         ids_path     = tdir / _POST_IDS_FILE
@@ -109,12 +114,26 @@ class PostTopTagsStore:
         payload_path = tdir / _PAYLOAD_FILE
         json_path    = tdir / _LEGACY_JSON
 
-        if ids_path.exists() and offsets_path.exists() and payload_path.exists():
+        ids_exists     = ids_path.exists()
+        offsets_exists = offsets_path.exists()
+        payload_exists = payload_path.exists()
+
+        if ids_exists and offsets_exists and payload_exists:
             post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64)
             offsets  = np.fromfile(str(offsets_path), dtype=np.uint64)
             payload  = payload_path.read_bytes()
             log.debug("post_top_tags_store.loaded_binary", n_posts=len(post_ids))
             return cls(post_ids, offsets, payload)
+
+        if ids_exists or offsets_exists or payload_exists:
+            log.warning(
+                "post_top_tags_store.partial_binary_store",
+                ids_exists=ids_exists,
+                offsets_exists=offsets_exists,
+                payload_exists=payload_exists,
+                hint="binary store is incomplete — run --backfill to rebuild",
+            )
+            # Fall through: attempt legacy JSON migration or return empty.
 
         if json_path.exists():
             size = json_path.stat().st_size
@@ -154,6 +173,11 @@ class PostTopTagsStore:
     # ------------------------------------------------------------------
     # Dict-like interface
     # ------------------------------------------------------------------
+
+    @property
+    def is_dirty(self) -> bool:
+        """True if there are unsaved changes in the delta."""
+        return bool(self._delta)
 
     def __setitem__(self, post_id: int, tags: list[tuple[int, float]]) -> None:
         self._delta[post_id] = tags
@@ -210,14 +234,21 @@ class PostTopTagsStore:
         """Merge delta into base and write new binary files.
 
         Uses a streaming two-pointer merge so neither the old nor new payload
-        needs to be fully buffered in RAM.  After writing, updates self in-place
-        (with lazy payload reload) so subsequent reads on the same instance see
-        the merged data — this is required because _build_tag_matrix runs after
-        _refresh_posts calls save().
+        needs to be fully buffered in RAM.  All three files are written to .tmp
+        siblings and then atomically renamed so load() always sees a consistent
+        generation.  After writing, updates self in-place (with lazy payload
+        reload) so subsequent reads on the same instance see the merged data —
+        this is required because _build_tag_matrix runs after _refresh_posts
+        calls save().
         """
         ids_path     = tdir / _POST_IDS_FILE
         offsets_path = tdir / _OFFSETS_FILE
         payload_path = tdir / _PAYLOAD_FILE
+
+        # np.save appends .npy if absent, so the ids temp file must end with .npy.
+        ids_tmp     = tdir / "post_top_tags_post_ids.tmp.npy"
+        offsets_tmp = tdir / (_OFFSETS_FILE + ".tmp")
+        payload_tmp = tdir / (_PAYLOAD_FILE + ".tmp")
 
         # Sorted inputs for the two-pointer merge
         base_ids:    list[int] = self._post_ids.tolist()   # already sorted
@@ -226,28 +257,40 @@ class PostTopTagsStore:
         n_base  = len(base_ids)
         n_delta = len(delta_items)
 
-        new_post_ids:    list[int] = []
+        new_post_ids:     list[int] = []
         new_offsets_list: list[int] = [0]
         running_offset = 0
 
-        # Keep a memoryview of the old payload for zero-copy slicing.
-        old_mv = memoryview(self._payload) if self._payload else None
+        # If payload was invalidated by a prior save() but we still have base
+        # IDs to carry forward, reload it now before overwriting the file.
+        if n_base and not self._payload and self._payload_mv is None:
+            reload_src = self._payload_path or payload_path
+            if reload_src.exists():
+                self._payload = reload_src.read_bytes()
+                self._payload_mv = memoryview(self._payload)
 
-        with open(payload_path, "wb") as f:
+        # memoryview of the old payload for zero-copy slicing into the new file.
+        old_mv: Optional[memoryview] = (
+            self._payload_mv if self._payload_mv is not None
+            else (memoryview(self._payload) if self._payload else None)
+        )
+
+        with open(payload_tmp, "wb") as f:
             bi = 0  # base pointer
             di = 0  # delta pointer
 
             while bi < n_base or di < n_delta:
-                base_pid  = base_ids[bi]           if bi < n_base  else None
-                delta_pid = delta_items[di][0]     if di < n_delta else None
-                delta_tags = delta_items[di][1]    if di < n_delta else None
+                base_pid   = base_ids[bi]        if bi < n_base  else None
+                delta_pid  = delta_items[di][0]  if di < n_delta else None
+                delta_tags = delta_items[di][1]  if di < n_delta else None
 
                 if base_pid is not None and (delta_pid is None or base_pid < delta_pid):
-                    # Emit from base — stream old payload slice directly, zero-copy.
+                    # Emit from base — write memoryview slice directly (buffer protocol,
+                    # no extra copy).
                     pid   = base_pid
                     start = int(self._offsets[bi])
                     end   = int(self._offsets[bi + 1])
-                    chunk = bytes(old_mv[start:end]) if old_mv is not None else b""
+                    chunk = old_mv[start:end] if old_mv is not None else b""
                     bi += 1
                 elif delta_pid is not None and (base_pid is None or delta_pid < base_pid):
                     # New post ID — insert from delta.
@@ -269,15 +312,23 @@ class PostTopTagsStore:
         new_ids_arr     = np.array(new_post_ids, dtype=np.int64)
         new_offsets_arr = np.array(new_offsets_list, dtype=np.uint64)
 
-        np.save(str(ids_path), new_ids_arr)
-        new_offsets_arr.tofile(str(offsets_path))
+        np.save(str(ids_tmp), new_ids_arr)
+        new_offsets_arr.tofile(str(offsets_tmp))
+
+        # Atomic rename: all three files replace their targets in sequence.
+        # If a crash occurs mid-sequence, load() will detect the partial state
+        # via the partial-store warning and either backfill or the next run
+        # will overwrite cleanly.
+        payload_tmp.replace(payload_path)
+        offsets_tmp.replace(offsets_path)
+        ids_tmp.replace(ids_path)
 
         # Update self in-place.  Invalidate payload so _lookup_base reloads
         # lazily on the next read (avoids re-reading a potentially large file
         # immediately if the caller never reads from base after save).
-        self._post_ids    = new_ids_arr
-        self._offsets     = new_offsets_arr
-        self._payload     = b""
-        self._payload_mv  = None
+        self._post_ids     = new_ids_arr
+        self._offsets      = new_offsets_arr
+        self._payload      = b""
+        self._payload_mv   = None
         self._payload_path = payload_path
         self._delta.clear()
