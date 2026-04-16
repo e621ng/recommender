@@ -119,11 +119,31 @@ class PostTopTagsStore:
         payload_exists = payload_path.exists()
 
         if ids_exists and offsets_exists and payload_exists:
-            post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64, copy=False)
-            offsets  = np.fromfile(str(offsets_path), dtype=np.uint64)
-            payload  = payload_path.read_bytes()
-            log.debug("post_top_tags_store.loaded_binary", n_posts=len(post_ids))
-            return cls(post_ids, offsets, payload)
+            try:
+                post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64, copy=False)
+                offsets  = np.fromfile(str(offsets_path), dtype=np.uint64)
+                payload  = payload_path.read_bytes()
+
+                if len(offsets) != len(post_ids) + 1:
+                    raise ValueError(
+                        f"offsets length mismatch: expected {len(post_ids) + 1}, "
+                        f"got {len(offsets)}"
+                    )
+                if int(offsets[-1]) != len(payload):
+                    raise ValueError(
+                        f"payload size mismatch: offsets[-1]={int(offsets[-1])}, "
+                        f"len(payload)={len(payload)}"
+                    )
+
+                log.debug("post_top_tags_store.loaded_binary", n_posts=len(post_ids))
+                return cls(post_ids, offsets, payload)
+            except (OSError, ValueError, IndexError) as exc:
+                log.warning(
+                    "post_top_tags_store.corrupt_binary_store",
+                    error=str(exc),
+                    hint="binary store is corrupt — run --backfill to rebuild",
+                )
+                # Fall through: attempt legacy JSON migration or return empty.
 
         if ids_exists or offsets_exists or payload_exists:
             log.warning(
@@ -223,8 +243,54 @@ class PostTopTagsStore:
 
         Matches the `set(post_top_tags.keys())` call site in runner.py.
         """
-        base: set[int] = set(self._post_ids.tolist())
+        base: set[int] = {int(pid) for pid in self._post_ids}
         return base | set(self._delta.keys())
+
+    def get_many(
+        self, sorted_post_ids: np.ndarray
+    ) -> list[list[tuple[int, float]]]:
+        """Return tags for every ID in sorted_post_ids via a two-pointer scan.
+
+        O(N + Q) where N = len(base) and Q = len(sorted_post_ids), vs O(Q log N)
+        for Q individual .get() calls.  sorted_post_ids must be sorted ascending.
+        """
+        n_query = len(sorted_post_ids)
+        result: list[list[tuple[int, float]]] = [[] for _ in range(n_query)]
+        if n_query == 0:
+            return result
+
+        # Lazy payload reload (mirrors _lookup_base).
+        if len(self._post_ids) > 0 and self._payload_mv is None and self._payload_path is not None:
+            self._payload = self._payload_path.read_bytes()
+            self._payload_mv = memoryview(self._payload) if self._payload else None
+
+        delta_items = sorted(self._delta.items())
+        n_base  = len(self._post_ids)
+        n_delta = len(delta_items)
+
+        bi = 0  # base pointer
+        di = 0  # delta pointer
+
+        for qi in range(n_query):
+            qid = int(sorted_post_ids[qi])
+
+            # Advance each pointer past entries strictly less than the query ID.
+            while bi < n_base and int(self._post_ids[bi]) < qid:
+                bi += 1
+            while di < n_delta and delta_items[di][0] < qid:
+                di += 1
+
+            base_hit  = bi < n_base  and int(self._post_ids[bi]) == qid
+            delta_hit = di < n_delta and delta_items[di][0] == qid
+
+            if delta_hit:
+                result[qi] = delta_items[di][1]
+            elif base_hit and self._payload_mv is not None:
+                tags = decode_post(bi, self._offsets, self._payload_mv)
+                if tags is not None:
+                    result[qi] = tags
+
+        return result
 
     # ------------------------------------------------------------------
     # Persistence
@@ -251,10 +317,9 @@ class PostTopTagsStore:
         payload_tmp = tdir / (_PAYLOAD_FILE + ".tmp")
 
         # Sorted inputs for the two-pointer merge
-        base_ids:    list[int] = self._post_ids.tolist()   # already sorted
         delta_items: list[tuple[int, list[tuple[int, float]]]] = sorted(self._delta.items())
 
-        n_base  = len(base_ids)
+        n_base  = len(self._post_ids)
         n_delta = len(delta_items)
 
         new_post_ids:     list[int] = []
@@ -289,8 +354,8 @@ class PostTopTagsStore:
             di = 0  # delta pointer
 
             while bi < n_base or di < n_delta:
-                base_pid   = base_ids[bi]        if bi < n_base  else None
-                delta_pid  = delta_items[di][0]  if di < n_delta else None
+                base_pid   = int(self._post_ids[bi]) if bi < n_base  else None
+                delta_pid  = delta_items[di][0]      if di < n_delta else None
                 delta_tags = delta_items[di][1]  if di < n_delta else None
 
                 if base_pid is not None and (delta_pid is None or base_pid < delta_pid):
@@ -324,15 +389,10 @@ class PostTopTagsStore:
         np.save(str(ids_tmp), new_ids_arr)
         new_offsets_arr.tofile(str(offsets_tmp))
 
-        # Publish: unlink old targets first so that any crash during the
-        # following renames leaves the partial state detectable by load() as an
-        # incomplete store (one or more files missing) rather than a silently
-        # mixed-generation complete-looking store.
-        for _old in (payload_path, offsets_path, ids_path):
-            try:
-                _old.unlink()
-            except FileNotFoundError:
-                pass
+        # Atomic publish: replace() is atomic per-file (POSIX rename) so the
+        # previous generation remains readable until each file is replaced.  A
+        # crash between renames leaves one or two old-generation files in place;
+        # the partial-store warning in load() catches any incomplete set.
         payload_tmp.replace(payload_path)
         offsets_tmp.replace(offsets_path)
         ids_tmp.replace(ids_path)

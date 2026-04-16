@@ -81,11 +81,13 @@ def run_update(cfg: Settings) -> None:
             dest = [i for i, pid in enumerate(all_post_ids) if pid in cf_lookup]
             src  = [cf_lookup[pid] for pid in all_post_ids if pid in cf_lookup]
             cf_matrix[dest] = cf_vecs[src]
-        tag_matrix = _build_tag_matrix(post_id_arr, post_top_tags, tag_emb, cfg.embedding_dim)
+        # Fetch all tag lists in one O(N + Q) two-pointer scan rather than
+        # Q individual O(log N) .get() calls.
+        top_tags_list = post_top_tags.get_many(post_id_arr)
+        tag_matrix = _build_tag_matrix(top_tags_list, tag_emb, cfg.embedding_dim)
 
         # --- 5. Build aligned arrays and begin writing versioned artifacts ---
         fav_arr = np.array([fav_count.get(int(pid), 0) for pid in post_id_arr], dtype=np.uint32)
-        top_tags_list = [post_top_tags.get(int(pid), []) for pid in post_id_arr]
 
         version = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with ArtifactWriter(cfg.model_dir) as writer:
@@ -308,14 +310,12 @@ def _refresh_posts(
 
 
 def _build_tag_matrix(
-    post_id_arr: np.ndarray,
-    post_top_tags: dict[int, list[tuple[int, float]]],
+    top_tags_list: list[list[tuple[int, float]]],
     tag_emb: np.ndarray,
     dim: int,
 ) -> np.ndarray:
-    n = len(post_id_arr)
+    n = len(top_tags_list)
     matrix = np.zeros((n, dim), dtype=np.float32)
-    for i, pid in enumerate(post_id_arr.tolist()):
-        top_tags = post_top_tags.get(int(pid), [])
+    for i, top_tags in enumerate(top_tags_list):
         matrix[i] = compute_tag_vector(top_tags, tag_emb, dim)
     return matrix
