@@ -1,0 +1,283 @@
+"""
+Disk-backed store for the training-cache copy of post_top_tags.
+
+On-disk format (training directory):
+    post_top_tags_post_ids.npy   int64  (N,)    sorted post IDs
+    post_top_tags.offsets.u64    uint64 (N+1,)  byte offsets into payload
+    post_top_tags.payload.bin    bytes           packed <If records (8 bytes each)
+
+The payload/offsets format is identical to the serving artifacts written by
+store/top_tags.py.  The post-IDs file is new — the serving layer uses a
+positional array index; the training cache needs lookup by post ID.
+
+Writes accumulate in an in-memory delta dict and are merged into the binary
+base on save().  The two-pointer merge streams the old payload directly to the
+new file without buffering a second copy in RAM.
+"""
+from __future__ import annotations
+
+import struct
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import structlog
+
+from recommender.store.top_tags import decode_post
+
+log = structlog.get_logger(__name__)
+
+_POST_IDS_FILE = "post_top_tags_post_ids.npy"
+_OFFSETS_FILE  = "post_top_tags.offsets.u64"
+_PAYLOAD_FILE  = "post_top_tags.payload.bin"
+_LEGACY_JSON   = "post_top_tags.pkl.json"
+
+# 256 MB: auto-migrate only small (dev-scale) JSON; warn and start empty for larger
+_MIGRATE_LIMIT = 256 * 1024 * 1024
+
+# Mirrors top_tags._RECORD_FMT / _RECORD_SIZE — not imported to avoid coupling
+# to a private symbol.
+_RECORD_FMT  = "<If"   # little-endian uint32 tag_id + float32 weight
+_RECORD_SIZE = 8
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _encode_tags(tags: list[tuple[int, float]]) -> bytes:
+    return b"".join(struct.pack(_RECORD_FMT, tid, w) for tid, w in tags)
+
+
+def _empty_ids() -> np.ndarray:
+    return np.empty(0, dtype=np.int64)
+
+
+def _empty_offsets() -> np.ndarray:
+    # Valid offsets array for 0 posts: a single sentinel zero.
+    return np.zeros(1, dtype=np.uint64)
+
+
+# ---------------------------------------------------------------------------
+# Store
+# ---------------------------------------------------------------------------
+
+class PostTopTagsStore:
+    """
+    Dict-like interface to the binary training cache for post top-tags.
+
+    All existing call sites in runner.py / backfill.py work unchanged:
+        store[post_id] = tags          (__setitem__ → delta)
+        store.get(post_id, [])         (delta first, then base binary)
+        set(store.keys())              (union of base IDs and delta keys)
+    """
+
+    def __init__(
+        self,
+        post_ids: np.ndarray,
+        offsets: np.ndarray,
+        payload: bytes,
+        delta: Optional[dict[int, list[tuple[int, float]]]] = None,
+    ) -> None:
+        self._post_ids: np.ndarray = post_ids          # int64 (N,) sorted
+        self._offsets:  np.ndarray = offsets            # uint64 (N+1,)
+        self._payload:  bytes = payload                 # raw bytes
+        self._payload_mv: Optional[memoryview] = memoryview(payload) if payload else None
+        self._payload_path: Optional[Path] = None       # set by save() for lazy reload
+        self._delta: dict[int, list[tuple[int, float]]] = delta if delta is not None else {}
+
+    # ------------------------------------------------------------------
+    # Constructors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _empty(cls) -> PostTopTagsStore:
+        return cls(_empty_ids(), _empty_offsets(), b"")
+
+    @classmethod
+    def load(cls, tdir: Path) -> PostTopTagsStore:
+        """
+        Load from tdir.  Priority:
+
+        1. All 3 binary files present → load and return.
+        2. Legacy JSON ≤ _MIGRATE_LIMIT → auto-migrate to binary, return.
+        3. Legacy JSON too large, or no files → return empty store (backfill
+           required to repopulate).
+        """
+        ids_path     = tdir / _POST_IDS_FILE
+        offsets_path = tdir / _OFFSETS_FILE
+        payload_path = tdir / _PAYLOAD_FILE
+        json_path    = tdir / _LEGACY_JSON
+
+        if ids_path.exists() and offsets_path.exists() and payload_path.exists():
+            post_ids = np.load(str(ids_path), allow_pickle=False).astype(np.int64)
+            offsets  = np.fromfile(str(offsets_path), dtype=np.uint64)
+            payload  = payload_path.read_bytes()
+            log.debug("post_top_tags_store.loaded_binary", n_posts=len(post_ids))
+            return cls(post_ids, offsets, payload)
+
+        if json_path.exists():
+            size = json_path.stat().st_size
+            if size > _MIGRATE_LIMIT:
+                log.warning(
+                    "post_top_tags_store.json_too_large_starting_empty",
+                    size_mb=round(size / 1024 / 1024, 1),
+                    hint="run --backfill to repopulate the binary store",
+                )
+                return cls._empty()
+
+            log.warning(
+                "post_top_tags_store.migrating_from_json",
+                size_mb=round(size / 1024 / 1024, 1),
+            )
+            import orjson
+            raw = orjson.loads(json_path.read_bytes())
+            delta: dict[int, list[tuple[int, float]]] = {
+                int(k): [tuple(x) for x in v] for k, v in raw.items()
+            }
+            store = cls(_empty_ids(), _empty_offsets(), b"", delta)
+            store.save(tdir)
+            return store
+
+        log.debug("post_top_tags_store.no_data_found")
+        return cls._empty()
+
+    @classmethod
+    def from_dict(cls, d: dict[int, list[tuple[int, float]]]) -> PostTopTagsStore:
+        """Construct from an in-memory dict (backfill path).
+
+        Base is empty; everything lives in delta.  A single save() call writes
+        the full binary from scratch.
+        """
+        return cls(_empty_ids(), _empty_offsets(), b"", delta=dict(d))
+
+    # ------------------------------------------------------------------
+    # Dict-like interface
+    # ------------------------------------------------------------------
+
+    def __setitem__(self, post_id: int, tags: list[tuple[int, float]]) -> None:
+        self._delta[post_id] = tags
+
+    def _lookup_base(self, post_id: int) -> Optional[list[tuple[int, float]]]:
+        """O(log N) lookup into the sorted base array."""
+        if len(self._post_ids) == 0:
+            return None
+
+        # Lazy reload after save() — payload was invalidated to avoid double-buffering.
+        if self._payload_mv is None and self._payload_path is not None:
+            self._payload = self._payload_path.read_bytes()
+            self._payload_mv = memoryview(self._payload) if self._payload else None
+
+        if self._payload_mv is None:
+            return None
+
+        idx = int(np.searchsorted(self._post_ids, post_id))
+        if idx < len(self._post_ids) and int(self._post_ids[idx]) == post_id:
+            return decode_post(idx, self._offsets, self._payload_mv)
+        return None
+
+    def __getitem__(self, post_id: int) -> list[tuple[int, float]]:
+        if post_id in self._delta:
+            return self._delta[post_id]
+        result = self._lookup_base(post_id)
+        if result is None:
+            raise KeyError(post_id)
+        return result
+
+    def get(
+        self,
+        post_id: int,
+        default: Optional[list[tuple[int, float]]] = None,
+    ) -> Optional[list[tuple[int, float]]]:
+        if post_id in self._delta:
+            return self._delta[post_id]
+        result = self._lookup_base(post_id)
+        return result if result is not None else default
+
+    def keys(self) -> set[int]:
+        """Union of base post IDs and delta keys.
+
+        Matches the `set(post_top_tags.keys())` call site in runner.py.
+        """
+        base: set[int] = set(self._post_ids.tolist())
+        return base | set(self._delta.keys())
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, tdir: Path) -> None:
+        """Merge delta into base and write new binary files.
+
+        Uses a streaming two-pointer merge so neither the old nor new payload
+        needs to be fully buffered in RAM.  After writing, updates self in-place
+        (with lazy payload reload) so subsequent reads on the same instance see
+        the merged data — this is required because _build_tag_matrix runs after
+        _refresh_posts calls save().
+        """
+        ids_path     = tdir / _POST_IDS_FILE
+        offsets_path = tdir / _OFFSETS_FILE
+        payload_path = tdir / _PAYLOAD_FILE
+
+        # Sorted inputs for the two-pointer merge
+        base_ids:    list[int] = self._post_ids.tolist()   # already sorted
+        delta_items: list[tuple[int, list[tuple[int, float]]]] = sorted(self._delta.items())
+
+        n_base  = len(base_ids)
+        n_delta = len(delta_items)
+
+        new_post_ids:    list[int] = []
+        new_offsets_list: list[int] = [0]
+        running_offset = 0
+
+        # Keep a memoryview of the old payload for zero-copy slicing.
+        old_mv = memoryview(self._payload) if self._payload else None
+
+        with open(payload_path, "wb") as f:
+            bi = 0  # base pointer
+            di = 0  # delta pointer
+
+            while bi < n_base or di < n_delta:
+                base_pid  = base_ids[bi]           if bi < n_base  else None
+                delta_pid = delta_items[di][0]     if di < n_delta else None
+                delta_tags = delta_items[di][1]    if di < n_delta else None
+
+                if base_pid is not None and (delta_pid is None or base_pid < delta_pid):
+                    # Emit from base — stream old payload slice directly, zero-copy.
+                    pid   = base_pid
+                    start = int(self._offsets[bi])
+                    end   = int(self._offsets[bi + 1])
+                    chunk = bytes(old_mv[start:end]) if old_mv is not None else b""
+                    bi += 1
+                elif delta_pid is not None and (base_pid is None or delta_pid < base_pid):
+                    # New post ID — insert from delta.
+                    pid   = delta_pid
+                    chunk = _encode_tags(delta_tags)
+                    di += 1
+                else:
+                    # Same post ID: delta wins (update).
+                    pid   = delta_pid
+                    chunk = _encode_tags(delta_tags)
+                    bi += 1
+                    di += 1
+
+                f.write(chunk)
+                new_post_ids.append(pid)
+                running_offset += len(chunk)
+                new_offsets_list.append(running_offset)
+
+        new_ids_arr     = np.array(new_post_ids, dtype=np.int64)
+        new_offsets_arr = np.array(new_offsets_list, dtype=np.uint64)
+
+        np.save(str(ids_path), new_ids_arr)
+        new_offsets_arr.tofile(str(offsets_path))
+
+        # Update self in-place.  Invalidate payload so _lookup_base reloads
+        # lazily on the next read (avoids re-reading a potentially large file
+        # immediately if the caller never reads from base after save).
+        self._post_ids    = new_ids_arr
+        self._offsets     = new_offsets_arr
+        self._payload     = b""
+        self._payload_mv  = None
+        self._payload_path = payload_path
+        self._delta.clear()

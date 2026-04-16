@@ -13,6 +13,7 @@ from recommender.model.ann import build_index
 from recommender.model.embeddings import EmbeddingTable, apply_event_batch
 from recommender.model.hybrid import compute_hybrid_vectors
 from recommender.model.tags import TagMeta, TagVocab, compute_post_top_tags, compute_tag_vector
+from recommender.store.post_top_tags_store import PostTopTagsStore
 from recommender.store.layout import training_dir, updater_state as state_path
 from recommender.store.layout import (
     user_embeddings as ue_path,
@@ -136,7 +137,7 @@ def run_update(cfg: Settings) -> None:
 
 def _load_training_state(
     tdir: Path, cfg: Settings
-) -> tuple[EmbeddingTable, EmbeddingTable, np.ndarray, TagVocab, dict, dict]:
+) -> tuple[EmbeddingTable, EmbeddingTable, np.ndarray, TagVocab, PostTopTagsStore, dict]:
     import orjson
     import zstandard as zstd
     from recommender.store.layout import tag_vocab, current_link, version_dir
@@ -170,12 +171,8 @@ def _load_training_state(
     else:
         vocab = TagVocab()
 
-    # Post top tags
-    ptt_path = tdir / "post_top_tags.pkl.json"  # stored as orjson
-    post_top_tags: dict[int, list[tuple[int, float]]] = {}
-    if ptt_path.exists():
-        raw = orjson.loads(ptt_path.read_bytes())
-        post_top_tags = {int(k): [tuple(x) for x in v] for k, v in raw.items()}
+    # Post top tags — binary store (auto-migrates legacy JSON if small enough)
+    post_top_tags = PostTopTagsStore.load(tdir)
 
     # Fav count
     fc_path = tdir / "fav_count.json"
@@ -259,7 +256,7 @@ def _consume_events(
 def _refresh_posts(
     conn, state: UpdaterState,
     vocab: TagVocab,
-    post_top_tags: dict[int, list[tuple[int, float]]],
+    post_top_tags: PostTopTagsStore,
     tag_emb: np.ndarray,
     tag_metadata: dict[str, TagMeta],
     n_posts_total: int,
@@ -301,9 +298,7 @@ def _refresh_posts(
 
     # Persist vocab and top tags
     (tdir / "tag_vocab_training.json").write_bytes(orjson.dumps(vocab.to_dict()))
-    (tdir / "post_top_tags.pkl.json").write_bytes(
-        orjson.dumps({str(k): v for k, v in post_top_tags.items()})
-    )
+    post_top_tags.save(tdir)
 
     if max_seen > after_dt:
         state.last_posts_updated_at = max_seen.isoformat()
