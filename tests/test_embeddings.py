@@ -98,6 +98,16 @@ def test_fav_count_clamped_at_zero():
     assert fc[100] == 0  # must not go negative
 
 
+def test_norm_clipping_bounds_embeddings():
+    user_table = EmbeddingTable(dim=64)
+    post_table = EmbeddingTable(dim=64)
+    user_table.get_or_init(1)[:] = 1000.0
+    post_table.get_or_init(1)[:] = 1000.0
+    apply_event_batch(user_table, post_table, {}, [(1, 1, 1)], lr=1.0, reg=0.0, max_norm=10.0)
+    _, u_mat = user_table.to_arrays()
+    assert np.all(np.linalg.norm(u_mat, axis=1) <= 10.0 + 1e-5)
+
+
 def test_regularization_shrinks_norm():
     """reg > 0 should reduce the norm of the user vector."""
     user_table = EmbeddingTable(dim=2)

@@ -58,6 +58,13 @@ def test_cosine_score_opposite_vectors():
     assert cosine_score(v, -v) == pytest.approx(-1.0, abs=1e-5)
 
 
+def test_large_magnitude_vectors_do_not_produce_zeros():
+    big = np.full((4, 64), 1e20, dtype=np.float32)
+    result = compute_hybrid_vectors(big, big, 0.5, 0.5)
+    assert np.all(np.isfinite(result))
+    assert not np.any(np.all(result == 0, axis=1))
+
+
 def test_cosine_score_zero_vector_returns_zero():
     v = np.array([1.0, 0.0], dtype=np.float32)
     z = np.zeros(2, dtype=np.float32)

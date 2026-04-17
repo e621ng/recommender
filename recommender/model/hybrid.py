@@ -3,9 +3,12 @@ import numpy as np
 
 
 def _l2_normalize_rows(matrix: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1.0, norms)
-    return matrix / norms
+    norms = np.linalg.norm(matrix.astype(np.float64), axis=1, keepdims=True)
+    bad = (norms == 0) | ~np.isfinite(norms)
+    safe = np.where(bad, 1.0, norms)
+    result = (matrix / safe).astype(matrix.dtype)
+    result[bad.squeeze(axis=1)] = 0.0
+    return result
 
 
 def compute_hybrid_vectors(

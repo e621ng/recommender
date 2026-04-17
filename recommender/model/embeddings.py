@@ -54,6 +54,12 @@ class EmbeddingTable:
         return table
 
 
+def _clip_to_max_norm(vec: np.ndarray, max_norm: float) -> None:
+    norm = float(np.linalg.norm(vec.astype(np.float64)))
+    if np.isfinite(norm) and norm > max_norm > 0:
+        vec *= max_norm / norm
+
+
 def apply_event_batch(
     user_table: EmbeddingTable,
     post_table: EmbeddingTable,
@@ -61,14 +67,21 @@ def apply_event_batch(
     events: list[tuple[int, int, int]],   # (user_id, post_id, action)
     lr: float,
     reg: float,
+    max_norm: float = 10.0,
 ) -> None:
     """Apply a batch of favorite/unfavorite events in-place."""
     for user_id, post_id, action in events:
         u = user_table.get_or_init(user_id).copy()
         p = post_table.get_or_init(post_id).copy()
 
-        user_table.get_or_init(user_id)[:] = u + lr * action * p - lr * reg * u
-        post_table.get_or_init(post_id)[:] = p + lr * action * u - lr * reg * p
+        new_u = u + lr * action * p - lr * reg * u
+        new_p = p + lr * action * u - lr * reg * p
+
+        _clip_to_max_norm(new_u, max_norm)
+        _clip_to_max_norm(new_p, max_norm)
+
+        user_table.get_or_init(user_id)[:] = new_u
+        post_table.get_or_init(post_id)[:] = new_p
 
         # update fav count (clamp >= 0)
         fav_count[post_id] = max(0, fav_count.get(post_id, 0) + action)
