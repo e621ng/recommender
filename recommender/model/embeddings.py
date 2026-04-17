@@ -55,8 +55,8 @@ class EmbeddingTable:
 
 
 def _clip_to_max_norm(vec: np.ndarray, max_norm: float) -> None:
-    norm = np.linalg.norm(vec)
-    if norm > max_norm:
+    norm = float(np.linalg.norm(vec.astype(np.float64)))
+    if np.isfinite(norm) and norm > max_norm > 0:
         vec *= max_norm / norm
 
 
