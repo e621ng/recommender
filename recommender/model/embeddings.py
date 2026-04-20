@@ -47,10 +47,10 @@ class EmbeddingTable:
     def from_arrays(cls, ids: np.ndarray, matrix: np.ndarray) -> "EmbeddingTable":
         dim = matrix.shape[1] if matrix.ndim == 2 and len(matrix) > 0 else 64
         table = cls(dim=dim)
+        m = matrix.astype(np.float32)
         for i, entity_id in enumerate(ids.tolist()):
-            vec = matrix[i].astype(np.float32).copy()
             table._id_to_idx[entity_id] = len(table._rows)
-            table._rows.append(vec)
+            table._rows.append(m[i].copy())
         return table
 
 
