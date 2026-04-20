@@ -3,6 +3,8 @@ import numpy as np
 
 
 def _l2_normalize_rows(matrix: np.ndarray) -> np.ndarray:
+    # float64 upcast is intentional: float32 norm computation squares each element,
+    # which overflows to inf when embeddings reach extreme magnitudes under SGD.
     norms = np.linalg.norm(matrix.astype(np.float64), axis=1, keepdims=True)
     bad = (norms == 0) | ~np.isfinite(norms)
     safe = np.where(bad, 1.0, norms)
@@ -21,8 +23,8 @@ def compute_hybrid_vectors(
     Blend and normalize to produce final serving vectors.
     Returns float16 (N, D).
     """
-    cf_norm = _l2_normalize_rows(post_cf.astype(np.float32))
-    tag_norm = _l2_normalize_rows(post_tag.astype(np.float32))
+    cf_norm = _l2_normalize_rows(post_cf)
+    tag_norm = _l2_normalize_rows(post_tag)
     blended = w_cf * cf_norm + w_tag * tag_norm
     hybrid = _l2_normalize_rows(blended)
     return hybrid.astype(np.float16)
